@@ -2587,7 +2587,7 @@ static int kvm_vm_set_mem_attributes(struct kvm *kvm, gfn_t start, gfn_t end,
 	struct kvm_memory_slot *slot;
 	unsigned long i;
 	void *entry;
-	int r = 0;
+	int r = 0, bkt;
 
 	entry = attributes ? xa_mk_value(attributes) : NULL;
 
@@ -2627,7 +2627,7 @@ static int kvm_vm_set_mem_attributes(struct kvm *kvm, gfn_t start, gfn_t end,
 	 * while HVA-based pfncaches do not have gpa/memslot info.  Thus,
 	 * using GFN ranges would miss invalidating HVA-based ones.
 	 */
-	kvm_for_each_memslot(slot, slots) {
+	kvm_for_each_memslot(slot, bkt, slots) {
 		gfn_t gfn_start = max(start, slot->base_gfn);
 		gfn_t gfn_end = min(end, slot->base_gfn + slot->npages);
 
@@ -4997,6 +4997,10 @@ static int kvm_vm_ioctl_check_extension_generic(struct kvm *kvm, long arg)
 		return 1;
 	case KVM_CAP_GUEST_MEMFD_FLAGS:
 		return kvm_gmem_get_supported_flags(kvm);
+#endif
+#ifdef CONFIG_HAVE_KVM_USERFAULT
+	case KVM_CAP_USERFAULT:
+		return kvm_has_userfault(kvm);
 #endif
 	default:
 		break;
