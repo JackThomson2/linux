@@ -4,6 +4,7 @@
  * Author: Christoffer Dall <c.dall@virtualopensystems.com>
  */
 
+#include "linux/sched.h"
 #include <linux/mman.h>
 #include <linux/kvm_host.h>
 #include <linux/io.h>
@@ -1473,7 +1474,7 @@ static bool kvm_vma_mte_allowed(struct vm_area_struct *vma)
 static int user_mem_abort(struct kvm_vcpu *vcpu, phys_addr_t fault_ipa,
 			  struct kvm_s2_trans *nested,
 			  struct kvm_memory_slot *memslot, unsigned long hva,
-			  bool fault_is_perm)
+			  bool fault_is_perm, bool is_pre_fault)
 {
 	int ret = 0;
 	bool write_fault, writable, force_pte = false;
@@ -1496,8 +1497,8 @@ static int user_mem_abort(struct kvm_vcpu *vcpu, phys_addr_t fault_ipa,
 
 	if (fault_is_perm)
 		fault_granule = kvm_vcpu_trap_get_perm_fault_granule(vcpu);
-	write_fault = kvm_is_write_fault(vcpu);
-	exec_fault = kvm_vcpu_trap_is_exec_fault(vcpu);
+	write_fault = !is_pre_fault && kvm_is_write_fault(vcpu);
+	exec_fault = !is_pre_fault && kvm_vcpu_trap_is_exec_fault(vcpu);
 	VM_BUG_ON(write_fault && exec_fault);
 
 	if (fault_is_perm && !write_fault && !exec_fault) {
@@ -1954,7 +1955,7 @@ int kvm_handle_guest_abort(struct kvm_vcpu *vcpu)
 	}
 
 	ret = user_mem_abort(vcpu, fault_ipa, nested, memslot, hva,
-			     esr_fsc_is_permission_fault(esr));
+			     esr_fsc_is_permission_fault(esr), false);
 	if (ret == 0)
 		ret = 1;
 out:
@@ -2315,4 +2316,36 @@ void kvm_toggle_cache(struct kvm_vcpu *vcpu, bool was_enabled)
 		*vcpu_hcr(vcpu) &= ~HCR_TVM;
 
 	trace_kvm_toggle_cache(*vcpu_pc(vcpu), was_enabled, now_enabled);
+}
+
+
+long kvm_arch_vcpu_pre_fault_memory(struct kvm_vcpu *vcpu,
+				    struct kvm_pre_fault_memory *range)
+{
+	unsigned long hva;
+	int r;
+	u64 end;
+	phys_addr_t ipa = range->gpa;
+	gfn_t gfn = ipa >> PAGE_SHIFT;
+
+	struct kvm_memory_slot *memslot = gfn_to_memslot(vcpu->kvm, gfn);
+	if (!memslot) {
+		return -ENOENT;
+	}
+
+	hva = gfn_to_hva_memslot(memslot, gfn);
+
+	do {
+		if (signal_pending(current))
+			return -EINTR;
+
+		if (kvm_check_request(KVM_REQ_VM_DEAD, vcpu))
+			return -EIO;
+
+		cond_resched();
+	    r = user_mem_abort(vcpu, ipa, NULL, memslot, hva, false, true);
+	} while (r == -EAGAIN);
+
+	end = (range->gpa & PAGE_MASK) + PAGE_SIZE;
+	return min(range->size, end - range->gpa);
 }
