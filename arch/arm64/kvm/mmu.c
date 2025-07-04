@@ -1521,9 +1521,9 @@ static void adjust_nested_fault_perms(struct kvm_s2_trans *nested,
 
 #define KVM_PGTABLE_WALK_MEMABORT_FLAGS (KVM_PGTABLE_WALK_HANDLE_FAULT | KVM_PGTABLE_WALK_SHARED)
 
-static int gmem_abort(struct kvm_vcpu *vcpu, phys_addr_t fault_ipa,
-		      struct kvm_s2_trans *nested,
-		      struct kvm_memory_slot *memslot, bool is_perm)
+static int __gmem_abort(struct kvm_vcpu *vcpu, phys_addr_t fault_ipa,
+			struct kvm_s2_trans *nested,
+			struct kvm_memory_slot *memslot, bool is_perm)
 {
 	bool write_fault, exec_fault, writable;
 	enum kvm_pgtable_walk_flags flags = KVM_PGTABLE_WALK_MEMABORT_FLAGS;
@@ -1592,13 +1592,21 @@ out_unlock:
 	if (writable && !ret)
 		mark_page_dirty_in_slot(kvm, memslot, gfn);
 
+	return ret;
+}
+
+static int gmem_abort(struct kvm_vcpu *vcpu, phys_addr_t fault_ipa,
+		      struct kvm_s2_trans *nested,
+		      struct kvm_memory_slot *memslot, bool is_perm)
+{
+	int ret = __gmem_abort(vcpu, fault_ipa, nested, memslot, is_perm);
 	return ret != -EAGAIN ? ret : 0;
 }
 
-static int user_mem_abort(struct kvm_vcpu *vcpu, phys_addr_t fault_ipa,
-			  struct kvm_s2_trans *nested,
-			  struct kvm_memory_slot *memslot, unsigned long hva,
-			  bool fault_is_perm)
+static int __user_mem_abort(struct kvm_vcpu *vcpu, phys_addr_t fault_ipa,
+			    struct kvm_s2_trans *nested,
+			    struct kvm_memory_slot *memslot, unsigned long hva,
+			    bool fault_is_perm, long *page_size)
 {
 	int ret = 0;
 	bool topup_memcache;
@@ -1865,6 +1873,8 @@ static int user_mem_abort(struct kvm_vcpu *vcpu, phys_addr_t fault_ipa,
 		ret = KVM_PGT_FN(kvm_pgtable_stage2_map)(pgt, fault_ipa, vma_pagesize,
 					     __pfn_to_phys(pfn), prot,
 					     memcache, flags);
+		if (page_size)
+			*page_size = vma_pagesize;
 	}
 
 out_unlock:
@@ -1875,6 +1885,16 @@ out_unlock:
 	if (writable && !ret)
 		mark_page_dirty_in_slot(kvm, memslot, gfn);
 
+	return ret;
+}
+
+static int user_mem_abort(struct kvm_vcpu *vcpu, phys_addr_t fault_ipa,
+			  struct kvm_s2_trans *nested,
+			  struct kvm_memory_slot *memslot, unsigned long hva,
+			  bool fault_is_perm)
+{
+	int ret = __user_mem_abort(vcpu, fault_ipa, nested, memslot, hva,
+				   fault_is_perm, NULL);
 	return ret != -EAGAIN ? ret : 0;
 }
 
