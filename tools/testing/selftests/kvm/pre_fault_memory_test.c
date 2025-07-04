@@ -10,6 +10,7 @@
 #include <test_util.h>
 #include <kvm_util.h>
 #include <processor.h>
+#include <ucall.h>
 
 /* Arbitrarily chosen values */
 #define TEST_SIZE		(SZ_2M + PAGE_SIZE)
@@ -58,7 +59,6 @@ static void pre_fault_memory(struct kvm_vcpu *vcpu, u64 gpa, u64 size,
 	if (left == 0)
 		__TEST_ASSERT_VM_VCPU_IOCTL(!ret, "KVM_PRE_FAULT_MEMORY", ret, vcpu->vm);
 	else
-		/* No memory slot causes RET_PF_EMULATE. it results in -ENOENT. */
 		__TEST_ASSERT_VM_VCPU_IOCTL(ret && save_errno == ENOENT,
 					    "KVM_PRE_FAULT_MEMORY", ret, vcpu->vm);
 }
@@ -105,8 +105,9 @@ static void __test_pre_fault_memory(unsigned long vm_type, bool private)
 	vcpu_run(vcpu);
 
 	run = vcpu->run;
-	TEST_ASSERT(run->exit_reason == KVM_EXIT_IO,
-		    "Wanted KVM_EXIT_IO, got exit reason: %u (%s)",
+	TEST_ASSERT(run->exit_reason == UCALL_EXIT_REASON,
+		    "Wanted %s, got exit reason: %u (%s)",
+		    exit_reason_str(UCALL_EXIT_REASON),
 		    run->exit_reason, exit_reason_str(run->exit_reason));
 
 	switch (get_ucall(vcpu, &uc)) {

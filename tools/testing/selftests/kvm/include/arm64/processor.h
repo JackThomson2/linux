@@ -16,6 +16,9 @@
 #include <asm/esr.h>
 #include <asm/sysreg.h>
 
+#define PAGE_SHIFT		12
+#define PAGE_SIZE		(1ULL << PAGE_SHIFT)
+
 
 #define ARM64_CORE_REG(x) (KVM_REG_ARM64 | KVM_REG_SIZE_U64 | \
 			   KVM_REG_ARM_CORE | KVM_REG_ARM_CORE_REG(x))
