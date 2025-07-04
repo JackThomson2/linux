@@ -12,17 +12,26 @@
 #include <processor.h>
 
 /* Arbitrarily chosen values */
-#define TEST_SIZE		(SZ_2M + PAGE_SIZE)
-#define TEST_NPAGES		(TEST_SIZE / PAGE_SIZE)
 #define TEST_SLOT		10
+
+/* Storage of test info to share with guest code */
+struct test_config {
+	int page_size;
+	uint64_t test_size;
+	uint64_t test_num_pages;
+	uint64_t test_slot;
+};
+
+struct test_config test_config;
 
 static void guest_code(uint64_t base_gpa)
 {
 	volatile uint64_t val __used;
+	struct test_config *config = &test_config;
 	int i;
 
-	for (i = 0; i < TEST_NPAGES; i++) {
-		uint64_t *src = (uint64_t *)(base_gpa + i * PAGE_SIZE);
+	for (i = 0; i < config->test_num_pages; i++) {
+		uint64_t *src = (uint64_t *)(base_gpa + i * config->page_size);
 
 		val = *src;
 	}
@@ -58,7 +67,7 @@ static void pre_fault_memory(struct kvm_vcpu *vcpu, u64 gpa, u64 size,
 	if (left == 0)
 		__TEST_ASSERT_VM_VCPU_IOCTL(!ret, "KVM_PRE_FAULT_MEMORY", ret, vcpu->vm);
 	else
-		/* No memory slot causes RET_PF_EMULATE. it results in -ENOENT. */
+		/* On x86 memory slot causes RET_PF_EMULATE. it results in -ENOENT. */
 		__TEST_ASSERT_VM_VCPU_IOCTL(ret && save_errno == ENOENT,
 					    "KVM_PRE_FAULT_MEMORY", ret, vcpu->vm);
 }
@@ -78,10 +87,15 @@ static void __test_pre_fault_memory(unsigned long vm_type, bool private)
 	uint64_t guest_test_virt_mem;
 	uint64_t alignment, guest_page_size;
 
+	test_config.page_size = getpagesize();
+	test_config.test_size = SZ_2M + test_config.page_size;
+	test_config.test_num_pages = test_config.test_size / test_config.page_size;
+	test_config.test_slot = TEST_SLOT;
+
 	vm = vm_create_shape_with_one_vcpu(shape, &vcpu, guest_code);
 
 	alignment = guest_page_size = vm_guest_mode_params[VM_MODE_DEFAULT].page_size;
-	guest_test_phys_mem = (vm->max_gfn - TEST_NPAGES) * guest_page_size;
+	guest_test_phys_mem = (vm->max_gfn - test_config.test_num_pages) * getpagesize();
 #ifdef __s390x__
 	alignment = max(0x100000UL, guest_page_size);
 #else
@@ -90,23 +104,31 @@ static void __test_pre_fault_memory(unsigned long vm_type, bool private)
 	guest_test_phys_mem = align_down(guest_test_phys_mem, alignment);
 	guest_test_virt_mem = guest_test_phys_mem & ((1ULL << (vm->va_bits - 1)) - 1);
 
-	vm_userspace_mem_region_add(vm, VM_MEM_SRC_ANONYMOUS,
-				    guest_test_phys_mem, TEST_SLOT, TEST_NPAGES,
+	vm_userspace_mem_region_add(vm, VM_MEM_SRC_ANONYMOUS, guest_test_phys_mem,
+				    TEST_SLOT, test_config.test_num_pages,
 				    private ? KVM_MEM_GUEST_MEMFD : 0);
-	virt_map(vm, guest_test_virt_mem, guest_test_phys_mem, TEST_NPAGES);
+	virt_map(vm, guest_test_virt_mem, guest_test_phys_mem,
+		 test_config.test_num_pages);
 
 	if (private)
-		vm_mem_set_private(vm, guest_test_phys_mem, TEST_SIZE);
+		vm_mem_set_private(vm, guest_test_phys_mem, test_config.test_size);
 	pre_fault_memory(vcpu, guest_test_phys_mem, SZ_2M, 0);
-	pre_fault_memory(vcpu, guest_test_phys_mem + SZ_2M, PAGE_SIZE * 2, PAGE_SIZE);
-	pre_fault_memory(vcpu, guest_test_phys_mem + TEST_SIZE, PAGE_SIZE, PAGE_SIZE);
+	pre_fault_memory(vcpu, guest_test_phys_mem + SZ_2M,
+			 test_config.page_size * 2, test_config.page_size);
+	pre_fault_memory(vcpu, guest_test_phys_mem + test_config.test_size,
+			 test_config.page_size, test_config.page_size);
 
 	vcpu_args_set(vcpu, 1, guest_test_virt_mem);
+
+	/* Export the shared variables to the guest. */
+	sync_global_to_guest(vm, test_config);
+
 	vcpu_run(vcpu);
 
 	run = vcpu->run;
-	TEST_ASSERT(run->exit_reason == KVM_EXIT_IO,
-		    "Wanted KVM_EXIT_IO, got exit reason: %u (%s)",
+	TEST_ASSERT(run->exit_reason == UCALL_EXIT_REASON,
+		    "Wanted %s, got exit reason: %u (%s)",
+		    exit_reason_str(UCALL_EXIT_REASON),
 		    run->exit_reason, exit_reason_str(run->exit_reason));
 
 	switch (get_ucall(vcpu, &uc)) {
