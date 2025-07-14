@@ -1096,6 +1096,9 @@ void vm_mem_add(struct kvm_vm *vm, enum vm_mem_backing_src_type src_type,
 	if (flags & KVM_MEM_GUEST_MEMFD) {
 		if (guest_memfd < 0) {
 			uint32_t guest_memfd_flags = 0;
+			if (backing_src_is_shared(src_type) && kvm_has_cap(KVM_CAP_GMEM_SHARED_MEM))
+				guest_memfd_flags |= GUEST_MEMFD_FLAG_SUPPORT_SHARED;
+
 			TEST_ASSERT(!guest_memfd_offset,
 				    "Offset must be zero when creating new guest_memfd");
 			guest_memfd = vm_create_guest_memfd(vm, mem_size, guest_memfd_flags);
