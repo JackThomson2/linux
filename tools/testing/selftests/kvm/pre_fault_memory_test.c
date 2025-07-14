@@ -14,6 +14,10 @@
 /* Arbitrarily chosen values */
 #define TEST_SLOT		10
 
+#define MEM_TYPE_DEFAULT	0
+#define MEM_TYPE_GUEST_FD	1
+#define MEM_TYPE_PRIVATE	2
+
 /* Storage of test info to share with guest code */
 struct test_config {
 	int page_size;
@@ -72,7 +76,7 @@ static void pre_fault_memory(struct kvm_vcpu *vcpu, u64 gpa, u64 size,
 					    "KVM_PRE_FAULT_MEMORY", ret, vcpu->vm);
 }
 
-static void __test_pre_fault_memory(unsigned long vm_type, bool private)
+static void __test_pre_fault_memory(unsigned long vm_type, int memory_type)
 {
 	const struct vm_shape shape = {
 		.mode = VM_MODE_DEFAULT,
@@ -92,10 +96,18 @@ static void __test_pre_fault_memory(unsigned long vm_type, bool private)
 	test_config.test_num_pages = test_config.test_size / test_config.page_size;
 	test_config.test_slot = TEST_SLOT;
 
+	enum vm_mem_backing_src_type vm_mem_type = VM_MEM_SRC_ANONYMOUS;
+	uint32_t vm_mem_flags = 0;
+	if (memory_type == MEM_TYPE_GUEST_FD)
+		vm_mem_type = VM_MEM_SRC_SHMEM;
+
+	if (memory_type > 0)
+		vm_mem_flags = KVM_MEM_GUEST_MEMFD;
+
 	vm = vm_create_shape_with_one_vcpu(shape, &vcpu, guest_code);
 
 	alignment = guest_page_size = vm_guest_mode_params[VM_MODE_DEFAULT].page_size;
-	guest_test_phys_mem = (vm->max_gfn - test_config.test_num_pages) * getpagesize();
+	guest_test_phys_mem = (vm->max_gfn - test_config.test_num_pages) * guest_page_size;
 #ifdef __s390x__
 	alignment = max(0x100000UL, guest_page_size);
 #else
@@ -104,13 +116,13 @@ static void __test_pre_fault_memory(unsigned long vm_type, bool private)
 	guest_test_phys_mem = align_down(guest_test_phys_mem, alignment);
 	guest_test_virt_mem = guest_test_phys_mem & ((1ULL << (vm->va_bits - 1)) - 1);
 
-	vm_userspace_mem_region_add(vm, VM_MEM_SRC_ANONYMOUS, guest_test_phys_mem,
+	vm_userspace_mem_region_add(vm, vm_mem_type, guest_test_phys_mem,
 				    TEST_SLOT, test_config.test_num_pages,
-				    private ? KVM_MEM_GUEST_MEMFD : 0);
+				    vm_mem_flags);
 	virt_map(vm, guest_test_virt_mem, guest_test_phys_mem,
 		 test_config.test_num_pages);
 
-	if (private)
+	if (memory_type == MEM_TYPE_PRIVATE)
 		vm_mem_set_private(vm, guest_test_phys_mem, test_config.test_size);
 	pre_fault_memory(vcpu, guest_test_phys_mem, SZ_2M, 0);
 	pre_fault_memory(vcpu, guest_test_phys_mem + SZ_2M,
@@ -145,24 +157,27 @@ static void __test_pre_fault_memory(unsigned long vm_type, bool private)
 	kvm_vm_free(vm);
 }
 
-static void test_pre_fault_memory(unsigned long vm_type, bool private)
+static void test_pre_fault_memory(unsigned long vm_type, int memory_type)
 {
 	if (vm_type && !(kvm_check_cap(KVM_CAP_VM_TYPES) & BIT(vm_type))) {
 		pr_info("Skipping tests for vm_type 0x%lx\n", vm_type);
 		return;
 	}
 
-	__test_pre_fault_memory(vm_type, private);
+	__test_pre_fault_memory(vm_type, memory_type);
 }
 
 int main(int argc, char *argv[])
 {
 	TEST_REQUIRE(kvm_check_cap(KVM_CAP_PRE_FAULT_MEMORY));
 
-	test_pre_fault_memory(0, false);
+	test_pre_fault_memory(0, MEM_TYPE_DEFAULT);
+
+	if (kvm_has_cap(KVM_CAP_GMEM_SHARED_MEM))
+		test_pre_fault_memory(0, MEM_TYPE_GUEST_FD);
 #ifdef __x86_64__
-	test_pre_fault_memory(KVM_X86_SW_PROTECTED_VM, false);
-	test_pre_fault_memory(KVM_X86_SW_PROTECTED_VM, true);
+	test_pre_fault_memory(KVM_X86_SW_PROTECTED_VM, MEM_TYPE_DEFAULT);
+	test_pre_fault_memory(KVM_X86_SW_PROTECTED_VM, MEM_TYPE_PRIVATE);
 #endif
 	return 0;
 }
