@@ -2446,34 +2446,20 @@ long kvm_arch_vcpu_pre_fault_memory(struct kvm_vcpu *vcpu,
 	phys_addr_t ipa = range->gpa;
 	gfn_t gfn = ipa >> PAGE_SHIFT;
 
-	while (true) {
-		page_size = PAGE_SIZE;
-		memslot = gfn_to_memslot(vcpu->kvm, gfn);
-		if (!memslot)
-			return -ENOENT;
+	page_size = PAGE_SIZE;
+	memslot = gfn_to_memslot(vcpu->kvm, gfn);
+	if (!memslot)
+		return -ENOENT;
 
-		if (kvm_slot_has_gmem(memslot)) {
-			r = __gmem_abort(vcpu, ipa, NULL, memslot, false, true);
-		} else {
-			hva = gfn_to_hva_memslot_prot(memslot, gfn, NULL);
-			if (kvm_is_error_hva(hva))
-				return -EFAULT;
-			r = __user_mem_abort(vcpu, ipa, NULL, memslot, hva,
-					     false, true, &page_size);
-		}
-
-		if (r == -EAGAIN) {
-			if (signal_pending(current))
-				return -EINTR;
-
-			if (kvm_check_request(KVM_REQ_VM_DEAD, vcpu))
-				return -EIO;
-
-			cond_resched();
-		} else {
-			break;
-		}
-	};
+	if (kvm_slot_has_gmem(memslot)) {
+		r = __gmem_abort(vcpu, ipa, NULL, memslot, false, true);
+	} else {
+		hva = gfn_to_hva_memslot_prot(memslot, gfn, NULL);
+		if (kvm_is_error_hva(hva))
+			return -EFAULT;
+		r = __user_mem_abort(vcpu, ipa, NULL, memslot, hva,
+					false, true, &page_size);
+	}
 
 	if (r < 0)
 		return r;

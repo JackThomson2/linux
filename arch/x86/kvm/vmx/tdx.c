@@ -3175,7 +3175,21 @@ static int tdx_gmem_post_populate(struct kvm *kvm, gfn_t gfn, kvm_pfn_t pfn,
 	if (ret != 1)
 		return -ENOMEM;
 
-	ret = kvm_tdp_map_page(vcpu, gpa, error_code, &level);
+	while (true) {
+		ret = kvm_tdp_map_page(vcpu, gpa, error_code, &level);
+		if (ret == -EAGAIN) {
+			if (signal_pending(current))
+				return -EINTR;
+
+			if (kvm_check_request(KVM_REQ_VM_DEAD, vcpu))
+				return -EIO;
+
+			cond_reshed()
+		} else {
+			break;
+		}
+	}
+
 	if (ret < 0)
 		goto out;
 

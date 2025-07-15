@@ -4354,6 +4354,11 @@ static int kvm_vcpu_pre_fault_memory(struct kvm_vcpu *vcpu,
 		if (WARN_ON_ONCE(r == 0 || r == -EIO))
 			break;
 
+		if (r == -EAGAIN) {
+			cond_resched();
+			continue;
+		}
+
 		if (r < 0)
 			break;
 
