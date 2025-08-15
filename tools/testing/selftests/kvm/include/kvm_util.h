@@ -188,7 +188,7 @@ enum vm_guest_mode {
 struct vm_shape {
 	uint32_t type;
 	uint8_t  mode;
-	uint8_t  pad0;
+	uint8_t  src_type;
 	uint16_t pad1;
 };
 
@@ -196,14 +196,15 @@ kvm_static_assert(sizeof(struct vm_shape) == sizeof(uint64_t));
 
 #define VM_TYPE_DEFAULT			0
 
-#define VM_SHAPE(__mode)			\
-({						\
-	struct vm_shape shape = {		\
-		.mode = (__mode),		\
-		.type = VM_TYPE_DEFAULT		\
-	};					\
-						\
-	shape;					\
+#define VM_SHAPE(__mode)				\
+({							\
+	struct vm_shape shape = {			\
+		.mode	  = (__mode),			\
+		.type	  = VM_TYPE_DEFAULT,		\
+		.src_type = VM_MEM_SRC_ANONYMOUS	\
+	};						\
+							\
+	shape;						\
 })
 
 #if defined(__aarch64__)
@@ -634,6 +635,24 @@ static inline bool is_smt_on(void)
 }
 
 void vm_create_irqchip(struct kvm_vm *vm);
+
+static inline uint32_t backing_src_guest_memfd_flags(enum vm_mem_backing_src_type t)
+{
+	uint32_t flags = 0;
+
+	switch (t) {
+	case VM_MEM_SRC_GUEST_MEMFD:
+		flags |= GUEST_MEMFD_FLAG_MMAP;
+		fallthrough;
+	case VM_MEM_SRC_GUEST_MEMFD_NO_DIRECT_MAP:
+		flags |= GUEST_MEMFD_FLAG_NO_DIRECT_MAP;
+		break;
+	default:
+		break;
+	}
+
+	return flags;
+}
 
 static inline int __vm_create_guest_memfd(struct kvm_vm *vm, uint64_t size,
 					uint64_t flags)
