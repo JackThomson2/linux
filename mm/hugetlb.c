@@ -5450,6 +5450,12 @@ static unsigned long hugetlb_vm_op_pagesize(struct vm_area_struct *vma)
 	return huge_page_size(hstate_vma(vma));
 }
 
+static bool hugetlb_vm_op_can_userfault(struct vm_area_struct *vma,
+					unsigned long vm_flags)
+{
+	return true;
+}
+
 /*
  * We cannot handle pagefaults against hugetlb pages at all.  They cause
  * handle_mm_fault() to try to instantiate regular-sized pages in the
@@ -5475,6 +5481,7 @@ const struct vm_operations_struct hugetlb_vm_ops = {
 	.close = hugetlb_vm_op_close,
 	.may_split = hugetlb_vm_op_split,
 	.pagesize = hugetlb_vm_op_pagesize,
+	.can_userfault = hugetlb_vm_op_can_userfault,
 };
 
 static pte_t make_huge_pte(struct vm_area_struct *vma, struct folio *folio,
@@ -6536,7 +6543,7 @@ static vm_fault_t hugetlb_no_page(struct address_space *mapping,
 		}
 
 		/* Check for page in userfault range. */
-		if (userfaultfd_minor(vma)) {
+		if (userfaultfd_minor(vma) && !(vmf->flags & FAULT_FLAG_USERFAULT_CONTINUE)) {
 			folio_unlock(folio);
 			folio_put(folio);
 			/* See comment in userfaultfd_missing() block above */

@@ -5,6 +5,7 @@
 #include <linux/pagemap.h>
 #include <linux/anon_inodes.h>
 #include <linux/set_memory.h>
+#include <linux/userfaultfd_k.h>
 
 #include "kvm_mm.h"
 
@@ -359,6 +360,12 @@ static vm_fault_t kvm_gmem_fault_user_mapping(struct vm_fault *vmf)
 		kvm_gmem_mark_prepared(folio);
 	}
 
+	if (userfaultfd_minor(vmf->vma) &&
+	    !(vmf->flags & FAULT_FLAG_USERFAULT_CONTINUE)) {
+		folio_unlock(folio);
+		return handle_userfault(vmf, VM_UFFD_MINOR);
+	}
+
 	vmf->page = folio_file_page(folio, vmf->pgoff);
 
 out_folio:
@@ -370,8 +377,15 @@ out_folio:
 	return ret;
 }
 
+static bool kvm_gmem_can_userfault(struct vm_area_struct *vma,
+                                  unsigned long vm_flags)
+{
+       return vm_flags & VM_UFFD_MINOR;
+}
+
 static const struct vm_operations_struct kvm_gmem_vm_ops = {
 	.fault = kvm_gmem_fault_user_mapping,
+	.can_userfault = kvm_gmem_can_userfault,
 };
 
 static int kvm_gmem_mmap(struct file *file, struct vm_area_struct *vma)

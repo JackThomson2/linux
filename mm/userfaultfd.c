@@ -376,30 +376,47 @@ out:
 	return ret;
 }
 
-/* Handles UFFDIO_CONTINUE for all shmem VMAs (shared or private). */
+/* Handles UFFDIO_CONTINUE for all VMAs */
 static int mfill_atomic_pte_continue(pmd_t *dst_pmd,
 				     struct vm_area_struct *dst_vma,
 				     unsigned long dst_addr,
 				     uffd_flags_t flags)
 {
-	struct inode *inode = file_inode(dst_vma->vm_file);
-	pgoff_t pgoff = linear_page_index(dst_vma, dst_addr);
 	struct folio *folio;
 	struct page *page;
 	int ret;
+	struct vm_fault vmf = {
+		.vma = dst_vma,
+		.address = dst_addr,
+		.flags = FAULT_FLAG_WRITE | FAULT_FLAG_REMOTE |
+		    FAULT_FLAG_USERFAULT_CONTINUE,
+		.pte = NULL,
+		.page = NULL,
+		.pgoff = linear_page_index(dst_vma, dst_addr),
+	};
 
-	ret = shmem_get_folio(inode, pgoff, 0, &folio, SGP_NOALLOC);
-	/* Our caller expects us to return -EFAULT if we failed to find folio */
-	if (ret == -ENOENT)
-		ret = -EFAULT;
-	if (ret)
-		goto out;
-	if (!folio) {
+	if (!dst_vma->vm_ops || !dst_vma->vm_ops->fault)
+		return -EINVAL;
+
+retry:
+	ret = dst_vma->vm_ops->fault(&vmf);
+	if (ret & VM_FAULT_ERROR) {
 		ret = -EFAULT;
 		goto out;
 	}
 
-	page = folio_file_page(folio, pgoff);
+	if (ret & VM_FAULT_NOPAGE) {
+		ret = -EAGAIN;
+		goto out;
+	}
+
+	if (ret & VM_FAULT_RETRY)
+		goto retry;
+
+	page = vmf.page;
+	folio = page_folio(page);
+	BUG_ON(!folio);
+
 	if (PageHWPoison(page)) {
 		ret = -EIO;
 		goto out_release;
@@ -707,6 +724,7 @@ static __always_inline ssize_t mfill_atomic(struct userfaultfd_ctx *ctx,
 	unsigned long src_addr, dst_addr;
 	long copied;
 	struct folio *folio;
+	bool can_userfault;
 
 	/*
 	 * Sanitize the command parameters:
@@ -766,10 +784,15 @@ retry:
 		return  mfill_atomic_hugetlb(ctx, dst_vma, dst_start,
 					     src_start, len, flags);
 
-	if (!vma_is_anonymous(dst_vma) && !vma_is_shmem(dst_vma))
+       can_userfault =
+           dst_vma->vm_ops &&
+           dst_vma->vm_ops->can_userfault &&
+	    dst_vma->vm_ops->can_userfault(dst_vma, __VM_UFFD_FLAGS);
+
+	if (!vma_is_anonymous(dst_vma) && !can_userfault)
 		goto out_unlock;
-	if (!vma_is_shmem(dst_vma) &&
-	    uffd_flags_mode_is(flags, MFILL_ATOMIC_CONTINUE))
+
+	if (!can_userfault && uffd_flags_mode_is(flags, MFILL_ATOMIC_CONTINUE))
 		goto out_unlock;
 
 	while (src_addr < src_start + len) {
