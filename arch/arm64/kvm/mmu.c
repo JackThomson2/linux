@@ -1598,7 +1598,8 @@ out_unlock:
 
 static int user_mem_abort(struct kvm_vcpu *vcpu, phys_addr_t fault_ipa,
 			    struct kvm_s2_trans *nested,
-			    struct kvm_memory_slot *memslot, unsigned long hva,
+			    struct kvm_memory_slot *memslot, 
+			    long *page_size, unsigned long hva,
 			    bool fault_is_perm, bool pre_fault)
 {
 	int ret = 0;
@@ -1876,6 +1877,9 @@ out_unlock:
 	if (writable && !ret)
 		mark_page_dirty_in_slot(kvm, memslot, gfn);
 
+	if (page_size)
+		*page_size = vma_pagesize;
+
 	return ret;
 }
 
@@ -2070,7 +2074,7 @@ int kvm_handle_guest_abort(struct kvm_vcpu *vcpu)
 		ret = gmem_abort(vcpu, fault_ipa, nested, memslot,
 				 esr_fsc_is_permission_fault(esr), false);
 	else
-		ret = user_mem_abort(vcpu, fault_ipa, nested, memslot, hva,
+		ret = user_mem_abort(vcpu, fault_ipa, nested, memslot, NULL, hva,
 				     esr_fsc_is_permission_fault(esr), false);
 	if (ret == 0)
 		ret = 1;
@@ -2454,11 +2458,13 @@ long kvm_arch_vcpu_pre_fault_memory(struct kvm_vcpu *vcpu,
 	int r;
 	hva_t hva;
 	phys_addr_t end;
+	long page_size;
 	struct kvm_memory_slot *memslot;
 	phys_addr_t ipa = range->gpa;
 	gfn_t gfn = gpa_to_gfn(range->gpa);
 
 	while (true) {
+		page_size = PAGE_SIZE;
 		memslot = gfn_to_memslot(vcpu->kvm, gfn);
 		if (!memslot)
 			return -ENOENT;
@@ -2469,7 +2475,7 @@ long kvm_arch_vcpu_pre_fault_memory(struct kvm_vcpu *vcpu,
 			hva = gfn_to_hva_memslot_prot(memslot, gfn, NULL);
 			if (kvm_is_error_hva(hva))
 				return -EFAULT;
-			r = user_mem_abort(vcpu, ipa, NULL, memslot, hva,
+			r = user_mem_abort(vcpu, ipa, NULL, memslot, &page_size, hva,
 					     false, true);
 		}
 
@@ -2488,6 +2494,6 @@ long kvm_arch_vcpu_pre_fault_memory(struct kvm_vcpu *vcpu,
 	if (r < 0)
 		return r;
 
-	end = (range->gpa & ~(PAGE_SIZE - 1)) + PAGE_SIZE;
+	end = (range->gpa & ~(page_size - 1)) + page_size;
 	return min(range->size, end - range->gpa);
 }
