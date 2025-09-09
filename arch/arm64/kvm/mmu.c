@@ -1523,7 +1523,8 @@ static void adjust_nested_fault_perms(struct kvm_s2_trans *nested,
 
 static int __gmem_abort(struct kvm_vcpu *vcpu, phys_addr_t fault_ipa,
 			struct kvm_s2_trans *nested,
-			struct kvm_memory_slot *memslot, bool is_perm)
+			struct kvm_memory_slot *memslot, bool is_perm,
+			bool pre_fault)
 {
 	bool write_fault, exec_fault, writable;
 	enum kvm_pgtable_walk_flags flags = KVM_PGTABLE_WALK_MEMABORT_FLAGS;
@@ -1537,6 +1538,9 @@ static int __gmem_abort(struct kvm_vcpu *vcpu, phys_addr_t fault_ipa,
 	gfn_t gfn;
 	int ret;
 
+	if (pre_fault)
+		flags |= KVM_PGTABLE_WALK_PRE_FAULT;
+
 	ret = prepare_mmu_memcache(vcpu, true, &memcache);
 	if (ret)
 		return ret;
@@ -1546,8 +1550,8 @@ static int __gmem_abort(struct kvm_vcpu *vcpu, phys_addr_t fault_ipa,
 	else
 		gfn = fault_ipa >> PAGE_SHIFT;
 
-	write_fault = kvm_is_write_fault(vcpu);
-	exec_fault = kvm_vcpu_trap_is_exec_fault(vcpu);
+	write_fault = !pre_fault && kvm_is_write_fault(vcpu);
+	exec_fault = !pre_fault && kvm_vcpu_trap_is_exec_fault(vcpu);
 
 	VM_WARN_ON_ONCE(write_fault && exec_fault);
 
@@ -1599,7 +1603,7 @@ static int gmem_abort(struct kvm_vcpu *vcpu, phys_addr_t fault_ipa,
 		      struct kvm_s2_trans *nested,
 		      struct kvm_memory_slot *memslot, bool is_perm)
 {
-	int ret = __gmem_abort(vcpu, fault_ipa, nested, memslot, is_perm);
+	int ret = __gmem_abort(vcpu, fault_ipa, nested, memslot, is_perm, false);
 	return ret != -EAGAIN ? ret : 0;
 }
 
@@ -1607,7 +1611,7 @@ static int __user_mem_abort(struct kvm_vcpu *vcpu, phys_addr_t fault_ipa,
 			    struct kvm_s2_trans *nested,
 			    struct kvm_memory_slot *memslot,
 			    long *page_size, unsigned long hva,
-			    bool fault_is_perm)
+			    bool fault_is_perm, bool pre_fault)
 {
 	int ret = 0;
 	bool topup_memcache;
@@ -1631,10 +1635,13 @@ static int __user_mem_abort(struct kvm_vcpu *vcpu, phys_addr_t fault_ipa,
 	vm_flags_t vm_flags;
 	enum kvm_pgtable_walk_flags flags = KVM_PGTABLE_WALK_MEMABORT_FLAGS;
 
+	if (pre_fault)
+		flags |= KVM_PGTABLE_WALK_PRE_FAULT;
+
 	if (fault_is_perm)
 		fault_granule = kvm_vcpu_trap_get_perm_fault_granule(vcpu);
-	write_fault = kvm_is_write_fault(vcpu);
-	exec_fault = kvm_vcpu_trap_is_exec_fault(vcpu);
+	write_fault = !pre_fault && kvm_is_write_fault(vcpu);
+	exec_fault = !pre_fault && kvm_vcpu_trap_is_exec_fault(vcpu);
 	VM_WARN_ON_ONCE(write_fault && exec_fault);
 
 	/*
@@ -1895,8 +1902,8 @@ static int user_mem_abort(struct kvm_vcpu *vcpu, phys_addr_t fault_ipa,
 			  struct kvm_memory_slot *memslot, unsigned long hva,
 			  bool fault_is_perm)
 {
-	int ret = __user_mem_abort(vcpu, fault_ipa, nested, memslot, NULL,
-			    hva, fault_is_perm);
+	int ret = __user_mem_abort(vcpu, fault_ipa, nested, memslot, NULL, hva,
+				   fault_is_perm, false);
 	return ret != -EAGAIN ? ret : 0;
 }
 
@@ -2467,4 +2474,50 @@ void kvm_toggle_cache(struct kvm_vcpu *vcpu, bool was_enabled)
 		*vcpu_hcr(vcpu) &= ~HCR_TVM;
 
 	trace_kvm_toggle_cache(*vcpu_pc(vcpu), was_enabled, now_enabled);
+}
+
+long kvm_arch_vcpu_pre_fault_memory(struct kvm_vcpu *vcpu,
+				    struct kvm_pre_fault_memory *range)
+{
+	int r;
+	hva_t hva;
+	phys_addr_t end;
+	long page_size;
+	struct kvm_memory_slot *memslot;
+	phys_addr_t ipa = range->gpa;
+	gfn_t gfn = gpa_to_gfn(range->gpa);
+
+	while (true) {
+		page_size = PAGE_SIZE;
+		memslot = gfn_to_memslot(vcpu->kvm, gfn);
+		if (!memslot)
+			return -ENOENT;
+
+		if (kvm_slot_has_gmem(memslot)) {
+			r = __gmem_abort(vcpu, ipa, NULL, memslot, false, true);
+		} else {
+			hva = gfn_to_hva_memslot_prot(memslot, gfn, NULL);
+			if (kvm_is_error_hva(hva))
+				return -EFAULT;
+			r = __user_mem_abort(vcpu, ipa, NULL, memslot, &page_size, hva, false,
+					     true);
+		}
+
+		if (r != -EAGAIN)
+			break;
+
+		if (signal_pending(current))
+			return -EINTR;
+
+		if (kvm_check_request(KVM_REQ_VM_DEAD, vcpu))
+			return -EIO;
+
+		cond_resched();
+	};
+
+	if (r < 0)
+		return r;
+
+	end = (range->gpa & ~(page_size - 1)) + page_size;
+	return min(range->size, end - range->gpa);
 }
