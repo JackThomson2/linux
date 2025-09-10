@@ -914,9 +914,13 @@ static int stage2_map_walker_try_leaf(const struct kvm_pgtable_visit_ctx *ctx,
 	 * same mapping or only change the access permissions. Instead,
 	 * the vCPU will exit one more time from guest if still needed
 	 * and then go through the path of relaxing permissions.
+	 *
+	 * When walking in the context of a pre-fault request, if the
+	 * mapping already exists we can return 0, as there's nothing
+	 * to do.
 	 */
 	if (!stage2_pte_needs_update(ctx->old, new))
-		return -EAGAIN;
+		return (ctx->flags & KVM_PGTABLE_WALK_PRE_FAULT) ? 0 : -EAGAIN;
 
 	/* If we're only changing software bits, then store them and go! */
 	if (!kvm_pgtable_walk_shared(ctx) &&
