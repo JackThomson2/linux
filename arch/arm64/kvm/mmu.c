@@ -1643,7 +1643,7 @@ out_unlock:
 static int user_mem_abort(struct kvm_vcpu *vcpu, phys_addr_t fault_ipa,
 			  struct kvm_s2_trans *nested,
 			  struct kvm_memory_slot *memslot, unsigned long hva,
-			  bool fault_is_perm)
+			  bool fault_is_perm, unsigned long *page_size)
 {
 	int ret = 0;
 	bool topup_memcache;
@@ -1791,6 +1791,8 @@ static int user_mem_abort(struct kvm_vcpu *vcpu, phys_addr_t fault_ipa,
 				&writable, &page);
 	if (pfn == KVM_PFN_ERR_HWPOISON) {
 		kvm_send_hwpoison_signal(hva, vma_shift);
+		if (page_size)
+			return -EHWPOISON;
 		return 0;
 	}
 	if (is_error_noslot_pfn(pfn))
@@ -1922,6 +1924,9 @@ static int user_mem_abort(struct kvm_vcpu *vcpu, phys_addr_t fault_ipa,
 out_unlock:
 	kvm_release_faultin_page(kvm, page, !!ret, writable);
 	kvm_fault_unlock(kvm);
+
+	if (page_size && !ret)
+		*page_size = vma_pagesize;
 
 	/* Mark the page dirty only if the fault is handled successfully */
 	if (writable && !ret)
@@ -2197,7 +2202,7 @@ int kvm_handle_guest_abort(struct kvm_vcpu *vcpu)
 				 esr_fsc_is_permission_fault(esr));
 	else
 		ret = user_mem_abort(vcpu, fault_ipa, nested, memslot, hva,
-				     esr_fsc_is_permission_fault(esr));
+				     esr_fsc_is_permission_fault(esr), NULL);
 	if (ret == 0)
 		ret = 1;
 out:
@@ -2572,4 +2577,131 @@ void kvm_toggle_cache(struct kvm_vcpu *vcpu, bool was_enabled)
 		*vcpu_hcr(vcpu) &= ~HCR_TVM;
 
 	trace_kvm_toggle_cache(*vcpu_pc(vcpu), was_enabled, now_enabled);
+}
+
+static void kvm_pre_fault_load_l1_mmu(struct kvm_vcpu *vcpu)
+{
+	preempt_disable();
+	kvm_arch_vcpu_put(vcpu);
+	vcpu->arch.hw_mmu = &vcpu->kvm->arch.mmu;
+	kvm_arch_vcpu_load(vcpu, smp_processor_id());
+	preempt_enable();
+}
+
+static void kvm_pre_fault_restore_mmu(struct kvm_vcpu *vcpu)
+{
+	preempt_disable();
+	kvm_arch_vcpu_put(vcpu);
+	kvm_arch_vcpu_load(vcpu, smp_processor_id());
+	preempt_enable();
+}
+
+long kvm_arch_vcpu_pre_fault_memory(struct kvm_vcpu *vcpu,
+				    struct kvm_pre_fault_memory *range)
+{
+	struct kvm_vcpu_fault_info *fault_info = &vcpu->arch.fault;
+	u64 esr_backup = fault_info->esr_el2;
+	u64 hpfar_backup = fault_info->hpfar_el2;
+	unsigned long page_size = PAGE_SIZE;
+	struct kvm_memory_slot *memslot;
+	phys_addr_t gpa = range->gpa;
+	struct kvm_pgtable *pgt;
+	phys_addr_t end;
+	kvm_pte_t pte;
+	hva_t hva;
+	gfn_t gfn;
+	s8 level = KVM_PGTABLE_LAST_LEVEL;
+	bool restore_hw_mmu;
+	long ret;
+
+	if (vcpu_is_protected(vcpu))
+		return -EOPNOTSUPP;
+
+	/*
+	 * Userspace provides L1 IPAs. Ensure we target the L1 stage-2
+	 * even if the vCPU was last running an L2 guest.  If this requires
+	 * swapping out a nested stage-2, go through the vCPU put/load helpers
+	 * to keep preemption, VMID, and nested MMU refcount state consistent.
+	 */
+	restore_hw_mmu = vcpu_has_nv(vcpu) &&
+			 vcpu->arch.hw_mmu != &vcpu->kvm->arch.mmu;
+	if (restore_hw_mmu)
+		kvm_pre_fault_load_l1_mmu(vcpu);
+
+	if (gpa >= kvm_phys_size(vcpu->arch.hw_mmu)) {
+		ret = -ENOENT;
+		goto out;
+	}
+
+	gfn = gpa_to_gfn(gpa);
+	memslot = gfn_to_memslot(vcpu->kvm, gfn);
+	if (!memslot) {
+		ret = -ENOENT;
+		goto out;
+	}
+
+	/*
+	 * A racing memslot deletion or move installs an invalid slot before
+	 * zapping stage-2.  Ask userspace to retry once the update settles.
+	 */
+	if (memslot->flags & KVM_MEMSLOT_INVALID) {
+		ret = -EAGAIN;
+		goto out;
+	}
+
+	/*
+	 * pKVM stage-2 mappings aren't directly walkable from the host; let
+	 * the fault path handle both new and existing mappings.
+	 */
+	if (!is_protected_kvm_enabled()) {
+		pgt = vcpu->arch.hw_mmu->pgt;
+		scoped_guard(read_lock, &vcpu->kvm->mmu_lock)
+			ret = kvm_pgtable_get_leaf(pgt, gpa, &pte, &level);
+		if (ret)
+			goto out;
+
+		if (kvm_pte_valid(pte)) {
+			page_size = kvm_granule_size(level);
+			if (!(pte & KVM_PTE_LEAF_ATTR_LO_S2_AF))
+				handle_access_fault(vcpu, gpa);
+			goto out_success;
+		}
+	}
+
+	fault_info->esr_el2 = (ESR_ELx_EC_DABT_LOW << ESR_ELx_EC_SHIFT) |
+		ESR_ELx_FSC_FAULT_L(level);
+	fault_info->hpfar_el2 = HPFAR_EL2_NS |
+		FIELD_PREP(HPFAR_EL2_FIPA, gpa >> 12);
+
+	if (kvm_slot_has_gmem(memslot)) {
+		ret = gmem_abort(vcpu, gpa, NULL, memslot, false);
+	} else {
+		hva = gfn_to_hva_memslot_prot(memslot, gfn, NULL);
+		if (kvm_is_error_hva(hva)) {
+			ret = -EFAULT;
+			goto out;
+		}
+
+		ret = user_mem_abort(vcpu, gpa, NULL, memslot, hva, false,
+				     &page_size);
+	}
+
+	if (ret < 0)
+		goto out;
+
+out_success:
+	end = ALIGN_DOWN(gpa, page_size) + page_size;
+	ret = min_t(u64, range->size, end - gpa);
+out:
+	/*
+	 * Restore the synthetic fault state so a subsequent KVM_RUN does not
+	 * observe it. kvm_handle_mmio_return() runs before guest entry can
+	 * refresh fault.esr_el2 from hardware, so leaving the synthetic ESR
+	 * in place would corrupt the completion of a pending MMIO exit.
+	 */
+	fault_info->esr_el2 = esr_backup;
+	fault_info->hpfar_el2 = hpfar_backup;
+	if (restore_hw_mmu)
+		kvm_pre_fault_restore_mmu(vcpu);
+	return ret;
 }
