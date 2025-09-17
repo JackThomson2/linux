@@ -1643,7 +1643,7 @@ out_unlock:
 static int user_mem_abort(struct kvm_vcpu *vcpu, phys_addr_t fault_ipa,
 			  struct kvm_s2_trans *nested,
 			  struct kvm_memory_slot *memslot, unsigned long hva,
-			  bool fault_is_perm)
+			  bool fault_is_perm, unsigned long *page_size)
 {
 	int ret = 0;
 	bool topup_memcache;
@@ -1923,6 +1923,9 @@ out_unlock:
 	kvm_release_faultin_page(kvm, page, !!ret, writable);
 	kvm_fault_unlock(kvm);
 
+	if (page_size)
+		*page_size = vma_pagesize;
+
 	/* Mark the page dirty only if the fault is handled successfully */
 	if (writable && !ret)
 		mark_page_dirty_in_slot(kvm, memslot, gfn);
@@ -2197,7 +2200,7 @@ int kvm_handle_guest_abort(struct kvm_vcpu *vcpu)
 				 esr_fsc_is_permission_fault(esr));
 	else
 		ret = user_mem_abort(vcpu, fault_ipa, nested, memslot, hva,
-				     esr_fsc_is_permission_fault(esr));
+				     esr_fsc_is_permission_fault(esr), NULL);
 	if (ret == 0)
 		ret = 1;
 out:
@@ -2572,4 +2575,93 @@ void kvm_toggle_cache(struct kvm_vcpu *vcpu, bool was_enabled)
 		*vcpu_hcr(vcpu) &= ~HCR_TVM;
 
 	trace_kvm_toggle_cache(*vcpu_pc(vcpu), was_enabled, now_enabled);
+}
+
+long kvm_arch_vcpu_pre_fault_memory(struct kvm_vcpu *vcpu,
+				    struct kvm_pre_fault_memory *range)
+{
+	struct kvm_vcpu_fault_info *fault_info = &vcpu->arch.fault;
+	struct kvm_s2_mmu *hw_mmu = vcpu->arch.hw_mmu;
+	unsigned long page_size = PAGE_SIZE;
+	struct kvm_memory_slot *memslot;
+	phys_addr_t gpa = range->gpa;
+	phys_addr_t end;
+	kvm_pte_t pte;
+	gfn_t gfn;
+	s8 level;
+	int ret;
+
+	if (vcpu_is_protected(vcpu))
+		return -EOPNOTSUPP;
+
+	/*
+	 * Pre-fault targets the canonical IPA space, not any nested shadow
+	 * stage-2.  Use the canonical mmu for the duration of this call and
+	 * restore the original pointer below.
+	 */
+	vcpu->arch.hw_mmu = &vcpu->kvm->arch.mmu;
+
+	if (gpa >= kvm_phys_size(vcpu->arch.hw_mmu)) {
+		ret = -ENOENT;
+		goto out;
+	}
+
+	read_lock(&vcpu->kvm->mmu_lock);
+	ret = kvm_pgtable_get_leaf(vcpu->arch.hw_mmu->pgt, gpa, &pte, &level);
+	read_unlock(&vcpu->kvm->mmu_lock);
+	if (ret)
+		goto out;
+
+	if (kvm_pte_valid(pte)) {
+		page_size = kvm_granule_size(level);
+		goto out_success;
+	}
+
+	gfn = gpa_to_gfn(gpa);
+	memslot = gfn_to_memslot(vcpu->kvm, gfn);
+	if (!memslot) {
+		ret = -ENOENT;
+		goto out;
+	}
+
+	fault_info->esr_el2 = (ESR_ELx_EC_DABT_LOW << ESR_ELx_EC_SHIFT) |
+			      ESR_ELx_FSC_FAULT_L(level);
+	fault_info->hpfar_el2 = HPFAR_EL2_NS |
+			       FIELD_PREP(HPFAR_EL2_FIPA, gpa >> 12);
+
+	if (kvm_slot_has_gmem(memslot)) {
+		ret = gmem_abort(vcpu, gpa, NULL, memslot, false);
+	} else {
+		hva_t hva = gfn_to_hva_memslot_prot(memslot, gfn, NULL);
+
+		if (kvm_is_error_hva(hva)) {
+			ret = -EFAULT;
+			goto out;
+		}
+
+		ret = user_mem_abort(vcpu, gpa, NULL, memslot, hva, false,
+				     &page_size);
+	}
+
+	if (ret < 0)
+		goto out;
+
+	/*
+	 * {user,gmem}_mem_abort() return 0 for transient -EAGAIN (from
+	 * mmu_invalidate_retry()) and for HWPOISON.  On the guest-exit
+	 * path that means "resume guest and retry", but we have no guest
+	 * to resume here -- surface -EAGAIN so userspace retries the
+	 * ioctl rather than us reporting fake forward progress.
+	 */
+	if (!ret) {
+		ret = -EAGAIN;
+		goto out;
+	}
+
+out_success:
+	end = ALIGN_DOWN(gpa, page_size) + page_size;
+	ret = min(range->size, end - gpa);
+out:
+	vcpu->arch.hw_mmu = hw_mmu;
+	return ret;
 }
