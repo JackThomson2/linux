@@ -1642,8 +1642,8 @@ out_unlock:
 
 static int user_mem_abort(struct kvm_vcpu *vcpu, phys_addr_t fault_ipa,
 			  struct kvm_s2_trans *nested,
-			  struct kvm_memory_slot *memslot, unsigned long hva,
-			  bool fault_is_perm)
+			  struct kvm_memory_slot *memslot, unsigned long *page_size,
+			  unsigned long hva, bool fault_is_perm)
 {
 	int ret = 0;
 	bool topup_memcache;
@@ -1923,6 +1923,9 @@ out_unlock:
 	kvm_release_faultin_page(kvm, page, !!ret, writable);
 	kvm_fault_unlock(kvm);
 
+	if (page_size)
+		*page_size = vma_pagesize;
+
 	/* Mark the page dirty only if the fault is handled successfully */
 	if (writable && !ret)
 		mark_page_dirty_in_slot(kvm, memslot, gfn);
@@ -2196,8 +2199,8 @@ int kvm_handle_guest_abort(struct kvm_vcpu *vcpu)
 		ret = gmem_abort(vcpu, fault_ipa, nested, memslot,
 				 esr_fsc_is_permission_fault(esr));
 	else
-		ret = user_mem_abort(vcpu, fault_ipa, nested, memslot, hva,
-				     esr_fsc_is_permission_fault(esr));
+		ret = user_mem_abort(vcpu, fault_ipa, nested, memslot, NULL,
+				     hva, esr_fsc_is_permission_fault(esr));
 	if (ret == 0)
 		ret = 1;
 out:
@@ -2572,4 +2575,78 @@ void kvm_toggle_cache(struct kvm_vcpu *vcpu, bool was_enabled)
 		*vcpu_hcr(vcpu) &= ~HCR_TVM;
 
 	trace_kvm_toggle_cache(*vcpu_pc(vcpu), was_enabled, now_enabled);
+}
+
+long kvm_arch_vcpu_pre_fault_memory(struct kvm_vcpu *vcpu,
+				    struct kvm_pre_fault_memory *range)
+{
+	struct kvm_vcpu_fault_info *fault_info = &vcpu->arch.fault;
+	struct kvm_s2_mmu *hw_mmu = vcpu->arch.hw_mmu;
+	unsigned long page_size = PAGE_SIZE;
+	struct kvm_memory_slot *memslot;
+	phys_addr_t gpa = range->gpa;
+	struct kvm_pgtable *pgt;
+	phys_addr_t end;
+	kvm_pte_t pte;
+	hva_t hva;
+	gfn_t gfn;
+	s8 level;
+	int ret;
+
+	if (vcpu_is_protected(vcpu))
+		return -EOPNOTSUPP;
+
+	/* Ensure hw_mmu loaded is canonical mmu */
+	vcpu->arch.hw_mmu = &vcpu->kvm->arch.mmu;	
+
+	if (gpa >= kvm_phys_size(vcpu->arch.hw_mmu)) {
+		ret = -ENOENT;
+		goto out;
+	}
+
+	pgt = vcpu->arch.hw_mmu->pgt;
+	scoped_guard(read_lock, &vcpu->kvm->mmu_lock)
+		ret = kvm_pgtable_get_leaf(pgt, gpa, &pte, &level);
+	if (ret)
+		goto out;
+
+	if (kvm_pte_valid(pte)) {
+		page_size = kvm_granule_size(level);
+		goto out_success;
+	}
+
+	fault_info->esr_el2 = (ESR_ELx_EC_DABT_LOW << ESR_ELx_EC_SHIFT) |
+		ESR_ELx_FSC_FAULT_L(level);
+	fault_info->hpfar_el2 = HPFAR_EL2_NS |
+		FIELD_PREP(HPFAR_EL2_FIPA, gpa >> 12);
+
+	gfn = gpa_to_gfn(gpa);
+	memslot = gfn_to_memslot(vcpu->kvm, gfn);
+	if (!memslot) {
+		ret = -ENOENT;
+		goto out;
+	}
+
+	if (kvm_slot_has_gmem(memslot)) {
+		ret = gmem_abort(vcpu, gpa, NULL, memslot, false);
+	} else {
+		hva = gfn_to_hva_memslot_prot(memslot, gfn, NULL);
+		if (kvm_is_error_hva(hva)) {
+			ret = -EFAULT;
+			goto out;
+		}
+
+		ret = user_mem_abort(vcpu, gpa, NULL, memslot, &page_size, hva,
+				     false);
+	}
+
+	if (ret < 0)
+		goto out;
+
+out_success:
+	end = ALIGN_DOWN(gpa, page_size) + page_size;
+	ret = min(range->size, end - gpa);
+out:
+	vcpu->arch.hw_mmu = hw_mmu;
+	return ret;
 }
