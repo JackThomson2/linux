@@ -644,6 +644,14 @@ config PAGE_REPORTING
 	  those pages to another entity, such as a hypervisor, so that the
 	  memory can be freed within the host for other uses.
 
+config PAGE_HINTING_WAIT_ON_ACK
+	bool "Free page hinting wait on ack"
+	def_bool n
+	help
+	  When using free page hinting, the driver will wait for the device
+	  to ack the page before adding it to the free page list. This allows
+	  the device to safely modify the page before the ack. Without this
+	  feature the memory could be reclaimed by the shrinker.
 #
 # support for page migration
 #
