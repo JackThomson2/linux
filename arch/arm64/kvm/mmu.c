@@ -1599,7 +1599,7 @@ out_unlock:
 
 static int user_mem_abort(struct kvm_vcpu *vcpu, phys_addr_t fault_ipa,
 			  struct kvm_s2_trans *nested,
-			  struct kvm_memory_slot *memslot, long *page_size,
+			  struct kvm_memory_slot *memslot, unsigned long *page_size,
 			  unsigned long hva, bool fault_is_perm)
 {
 	int ret = 0;
@@ -2464,49 +2464,80 @@ void kvm_toggle_cache(struct kvm_vcpu *vcpu, bool was_enabled)
 long kvm_arch_vcpu_pre_fault_memory(struct kvm_vcpu *vcpu,
 				    struct kvm_pre_fault_memory *range)
 {
-	int ret, idx;
-	hva_t hva;
-	phys_addr_t end;
+	struct kvm_s2_trans nested_trans, *nested = NULL;
+	struct kvm_vcpu_fault_info *fault_info;
 	struct kvm_memory_slot *memslot;
-	struct kvm_vcpu_fault_info stored_fault, *fault_info;
+	phys_addr_t end;
+	hva_t hva;
+	int ret;
 
-	long page_size = PAGE_SIZE;
-	phys_addr_t ipa = range->gpa;
 	gfn_t gfn = gpa_to_gfn(range->gpa);
+	phys_addr_t ipa = range->gpa;
+	unsigned long page_size = PAGE_SIZE;
 
-	idx = srcu_read_lock(&vcpu->kvm->srcu);
+	fault_info = &vcpu->arch.fault;
+
+	/* Generate a synthetic abort for the pre-fault address */
+	fault_info->esr_el2 = ESR_ELx_EC_DABT_LOW | 
+		ESR_ELx_FSC_FAULT_L(KVM_PGTABLE_LAST_LEVEL);
+	fault_info->hpfar_el2 = HPFAR_EL2_NS |
+		FIELD_PREP(HPFAR_EL2_FIPA, ipa >> 12);
+
+	/*
+	 * We may have faulted on a shadow stage 2 page table if we are
+	 * running a nested guest.  In this case, we have to resolve the L2
+	 * IPA to the L1 IPA first, before knowing what kind of memory should
+	 * back the L1 IPA.
+	 *
+	 * If the shadow stage 2 page table walk faults, then we simply inject
+	 * this to the guest and carry on.
+	 *
+	 * If there are no shadow S2 PTs because S2 is disabled, there is
+	 * nothing to walk and we treat it as a 1:1 before going through the
+	 * canonical translation.
+	 */
+	if (kvm_is_nested_s2_mmu(vcpu->kvm,vcpu->arch.hw_mmu) &&
+	    vcpu->arch.hw_mmu->nested_stage2_enabled) {
+		u32 esr;
+
+		ret = kvm_walk_nested_s2(vcpu, ipa, &nested_trans);
+		if (ret) {
+			esr = kvm_s2_trans_esr(&nested_trans);
+			kvm_inject_s2_fault(vcpu, esr);
+			goto out;
+		}
+
+		ret = kvm_s2_handle_perm_fault(vcpu, &nested_trans);
+		if (ret) {
+			esr = kvm_s2_trans_esr(&nested_trans);
+			kvm_inject_s2_fault(vcpu, esr);
+			goto out;
+		}
+
+		ipa = kvm_s2_trans_output(&nested_trans);
+		nested = &nested_trans;
+	}
 
 	if (ipa >= kvm_phys_size(vcpu->arch.hw_mmu)) {
 		ret = -ENOENT;
-		goto out_unlock;
+		goto out;
 	}
 
 	memslot = gfn_to_memslot(vcpu->kvm, gfn);
 	if (!memslot) {
 		ret = -ENOENT;
-		goto out_unlock;
+		goto out;
 	}
 
-	fault_info = &vcpu->arch.fault;
-	stored_fault = *fault_info;
-
-	/* Generate a synthetic abort for the pre-fault address */
-	fault_info->esr_el2 = ESR_ELx_EC_DABT_LOW;
-	fault_info->esr_el2 &= ~ESR_ELx_ISV;
-	fault_info->esr_el2 |= ESR_ELx_FSC_FAULT_L(KVM_PGTABLE_LAST_LEVEL);
-
-	fault_info->hpfar_el2 = HPFAR_EL2_NS |
-		FIELD_PREP(HPFAR_EL2_FIPA, ipa >> 12);
-
 	if (kvm_slot_has_gmem(memslot)) {
-		ret = gmem_abort(vcpu, ipa, NULL, memslot, false);
+		ret = gmem_abort(vcpu, ipa, nested, memslot, false);
 	} else {
 		hva = gfn_to_hva_memslot_prot(memslot, gfn, NULL);
 		if (kvm_is_error_hva(hva)) {
 			ret = -EFAULT;
 			goto out;
 		}
-		ret = user_mem_abort(vcpu, ipa, NULL, memslot, &page_size, hva,
+		ret = user_mem_abort(vcpu, ipa, nested, memslot, &page_size, hva,
 				     false);
 	}
 
@@ -2517,8 +2548,5 @@ long kvm_arch_vcpu_pre_fault_memory(struct kvm_vcpu *vcpu,
 	ret = min(range->size, end - range->gpa);
 
 out:
-	*fault_info = stored_fault;
-out_unlock:
-	srcu_read_unlock(&vcpu->kvm->srcu, idx);
 	return ret;
 }
