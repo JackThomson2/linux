@@ -11,6 +11,10 @@
 #ifndef __KVM_ASYNC_PF_H__
 #define __KVM_ASYNC_PF_H__
 
+#define KVM_APF_UF_PENDING   0
+#define KVM_APF_UF_ACCEPTED  1
+#define KVM_APF_UF_COMPLETED 2
+
 #ifdef CONFIG_KVM_ASYNC_PF
 int kvm_async_pf_init(void);
 void kvm_async_pf_deinit(void);

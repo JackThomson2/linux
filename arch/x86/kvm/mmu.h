@@ -237,6 +237,8 @@ static inline u8 permission_fault(struct kvm_vcpu *vcpu, struct kvm_mmu *mmu,
 
 bool kvm_mmu_may_ignore_guest_pat(struct kvm *kvm);
 
+void kvm_mmu_handle_apf_return(struct kvm_vcpu *vcpu);
+
 int kvm_mmu_post_init_vm(struct kvm *kvm);
 void kvm_mmu_pre_destroy_vm(struct kvm *kvm);
 
