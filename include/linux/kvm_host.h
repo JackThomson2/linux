@@ -243,13 +243,18 @@ struct kvm_async_pf {
 	unsigned long addr;
 	struct kvm_arch_async_pf arch;
 	bool   wakeup_all;
-	bool notpresent_injected;
+	bool   notpresent_injected;
+	bool   userfault;
 };
-
+bool kvm_userfault_async_pf_exists(struct kvm_vcpu *vcpu, 
+				   gfn_t gfn, bool *pending_accept);
+void kvm_accepted_async_pf(struct kvm_vcpu *vcpu);
+void kvm_clear_rejected_async_pf(struct kvm_vcpu *vcpu);
 void kvm_clear_async_pf_completion_queue(struct kvm_vcpu *vcpu);
 void kvm_check_async_pf_completion(struct kvm_vcpu *vcpu);
 bool kvm_setup_async_pf(struct kvm_vcpu *vcpu, gpa_t cr2_or_gpa,
-			unsigned long hva, struct kvm_arch_async_pf *arch);
+			unsigned long hva, struct kvm_arch_async_pf *arch,
+			bool *notpresent_injected, bool userfault);
 int kvm_async_pf_wakeup_all(struct kvm_vcpu *vcpu);
 #endif
 
@@ -363,7 +368,7 @@ struct kvm_vcpu {
 
 #ifdef CONFIG_KVM_ASYNC_PF
 	struct {
-		u32 queued;
+		atomic_t queued;
 		struct list_head queue;
 		struct list_head done;
 		spinlock_t lock;

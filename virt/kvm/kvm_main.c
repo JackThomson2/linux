@@ -4451,6 +4451,17 @@ static long kvm_vcpu_ioctl(struct file *filp,
 	if (r != -ENOIOCTLCMD)
 		return r;
 
+	// FIXME: x86 doesn't support async ioctls
+	// so running this before acquiring the vcpu mutex.
+	if (ioctl == KVM_ASYNC_PF_READY) {
+		struct kvm_async_pf_ready apf;
+		if (copy_from_user(&apf, argp, sizeof(apf)))
+			return -EFAULT;
+
+		async_pf_execute_vm_exit(vcpu, &apf);
+		return 0;
+	}
+
 	if (mutex_lock_killable(&vcpu->mutex))
 		return -EINTR;
 	switch (ioctl) {

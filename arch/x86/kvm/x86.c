@@ -11508,6 +11508,13 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 	kvm_load_guest_fpu(vcpu);
 
 	kvm_vcpu_srcu_read_lock(vcpu);
+
+	switch (kvm_run->exit_reason) {
+	case KVM_EXIT_MEMORY_FAULT:
+		kvm_mmu_handle_apf_return(vcpu);
+		break;
+	}
+
 	if (unlikely(vcpu->arch.mp_state == KVM_MP_STATE_UNINITIALIZED)) {
 		if (!vcpu->wants_to_run) {
 			r = -EINTR;
@@ -13409,7 +13416,8 @@ static inline bool apf_pageready_slot_free(struct kvm_vcpu *vcpu)
 	return !val;
 }
 
-static bool kvm_can_deliver_async_pf(struct kvm_vcpu *vcpu)
+bool kvm_can_deliver_async_pf(struct kvm_vcpu *vcpu);
+bool kvm_can_deliver_async_pf(struct kvm_vcpu *vcpu)
 {
 
 	if (!kvm_pv_async_pf_enabled(vcpu))
@@ -13461,7 +13469,7 @@ bool kvm_arch_async_page_not_present(struct kvm_vcpu *vcpu,
 	kvm_add_async_pf_gfn(vcpu, work->arch.gfn);
 
 	if (kvm_can_deliver_async_pf(vcpu) &&
-	    !apf_put_user_notpresent(vcpu)) {
+		!apf_put_user_notpresent(vcpu)) {
 		fault.vector = PF_VECTOR;
 		fault.error_code_valid = true;
 		fault.error_code = 0;

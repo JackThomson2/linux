@@ -1960,6 +1960,7 @@ struct kvm_arch_async_pf {
 	gfn_t gfn;
 	unsigned long cr3;
 	bool direct_map;
+	u32 state;
 	u64 error_code;
 };
 
@@ -2376,6 +2377,10 @@ bool kvm_arch_async_page_not_present(struct kvm_vcpu *vcpu,
 				     struct kvm_async_pf *work);
 void kvm_arch_async_page_present(struct kvm_vcpu *vcpu,
 				 struct kvm_async_pf *work);
+void async_pf_execute_vm_enter(struct kvm_vcpu *vcpu);
+void async_pf_execute_vm_exit(struct kvm_vcpu *vcpu, struct kvm_async_pf_ready *apf);
+void kvm_arch_userfault_ready(struct kvm_vcpu *vcpu,
+			       struct kvm_async_pf *work);
 void kvm_arch_async_page_ready(struct kvm_vcpu *vcpu,
 			       struct kvm_async_pf *work);
 void kvm_arch_async_page_present_queued(struct kvm_vcpu *vcpu);
