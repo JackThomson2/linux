@@ -49,6 +49,7 @@ config KVM_X86
 	select KVM_WERROR if WERROR
 	select KVM_GUEST_MEMFD if X86_64
 	select HAVE_KVM_USERFAULT
+	select HAVE_KVM_VCPU_ASYNC_IOCTL
 
 config KVM
 	tristate "Kernel-based Virtual Machine (KVM) support"

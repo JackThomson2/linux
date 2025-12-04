@@ -5925,6 +5925,23 @@ static int kvm_vcpu_ioctl_enable_cap(struct kvm_vcpu *vcpu,
 	}
 }
 
+long kvm_arch_vcpu_async_ioctl(struct file *filp,
+			       unsigned int ioctl, unsigned long arg)
+{
+	struct kvm_vcpu *vcpu = filp->private_data;
+	void __user *argp = (void __user *)arg;
+
+	if (ioctl == KVM_ASYNC_PF_READY) {
+		gpa_t apf_gpa;
+		if (copy_from_user(&apf_gpa, argp, sizeof(apf_gpa)))
+			return -EFAULT;
+
+		return kvm_async_pf_userfault_ready(vcpu, apf_gpa);
+	}
+
+	return -ENOIOCTLCMD;
+}
+
 long kvm_arch_vcpu_ioctl(struct file *filp,
 			 unsigned int ioctl, unsigned long arg)
 {
@@ -11507,7 +11524,14 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 	kvm_run->flags = 0;
 	kvm_load_guest_fpu(vcpu);
 
+	switch (kvm_run->exit_reason) {
+	case KVM_EXIT_MEMORY_FAULT:
+		kvm_mmu_handle_apf_return(vcpu);
+		break;
+	}
+
 	kvm_vcpu_srcu_read_lock(vcpu);
+
 	if (unlikely(vcpu->arch.mp_state == KVM_MP_STATE_UNINITIALIZED)) {
 		if (!vcpu->wants_to_run) {
 			r = -EINTR;
@@ -13461,7 +13485,7 @@ bool kvm_arch_async_page_not_present(struct kvm_vcpu *vcpu,
 	kvm_add_async_pf_gfn(vcpu, work->arch.gfn);
 
 	if (kvm_can_deliver_async_pf(vcpu) &&
-	    !apf_put_user_notpresent(vcpu)) {
+		!apf_put_user_notpresent(vcpu)) {
 		fault.vector = PF_VECTOR;
 		fault.error_code_valid = true;
 		fault.error_code = 0;
