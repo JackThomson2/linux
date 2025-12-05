@@ -448,7 +448,6 @@ struct kvm_run {
 #define KVM_MEMORY_EXIT_FLAG_PRIVATE	(1ULL << 3)
 #define KVM_MEMORY_EXIT_FLAG_USERFAULT	(1ULL << 4)
 #define KVM_MEMORY_EXIT_FLAG_APF	(1ULL << 5)
-#define KVM_MEMORY_EXIT_FLAG_APF_INJECTED	(1ULL << 6)
 #define KVM_MEMORY_EXIT_FLAG_APF_REJECTED	(1ULL << 7)
 			__u64 flags;
 			__u64 gpa;

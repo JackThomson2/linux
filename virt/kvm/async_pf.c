@@ -139,7 +139,6 @@ void async_pf_execute_vm_exit(struct kvm_vcpu *vcpu, struct kvm_async_pf_ready *
 	spin_lock(&vcpu->async_pf.lock);
 
 	/* pr_info("APF recieved VMEXIT for %02X, CPU id %u\n", apf_ready->token, vcpu->vcpu_idx); */
-
 	apf = async_pf_find_work_item_from_gfn(vcpu, accepted_gfn);
 
 	if (!apf) {
@@ -322,7 +321,7 @@ void kvm_check_async_pf_completion(struct kvm_vcpu *vcpu)
  */
 bool kvm_setup_async_pf(struct kvm_vcpu *vcpu, gpa_t cr2_or_gpa,
 			unsigned long hva, struct kvm_arch_async_pf *arch,
-			bool *notpresent_injected, bool userfault)
+			bool userfault)
 {
 	struct kvm_async_pf *work;
 
@@ -352,9 +351,6 @@ bool kvm_setup_async_pf(struct kvm_vcpu *vcpu, gpa_t cr2_or_gpa,
 	spin_lock(&vcpu->async_pf.lock);
 	list_add_tail(&work->queue, &vcpu->async_pf.queue);
 	spin_unlock(&vcpu->async_pf.lock);
-
-	if (notpresent_injected)
-		*notpresent_injected = work->notpresent_injected;
 
 	if (!userfault) {
 		INIT_WORK(&work->work, async_pf_execute);

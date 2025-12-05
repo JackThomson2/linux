@@ -4525,7 +4525,7 @@ void kvm_mmu_handle_apf_return(struct kvm_vcpu *vcpu)
 
 static bool kvm_arch_setup_async_pf(struct kvm_vcpu *vcpu,
 				    struct kvm_page_fault *fault,
-				    bool userfault, bool *notpresent_injected, u32 *token)
+				    bool userfault, u32 *token)
 {
 	struct kvm_arch_async_pf arch;
 
@@ -4540,7 +4540,7 @@ static bool kvm_arch_setup_async_pf(struct kvm_vcpu *vcpu,
 
 	return kvm_setup_async_pf(vcpu, fault->addr,
 				  kvm_vcpu_gfn_to_hva(vcpu, fault->gfn), &arch,
-				  notpresent_injected, userfault);
+				  userfault);
 }
 
 void kvm_arch_userfault_ready(struct kvm_vcpu *vcpu, struct kvm_async_pf *work)
@@ -4630,12 +4630,11 @@ static int __kvm_mmu_faultin_pfn(struct kvm_vcpu *vcpu,
 	if (userfault < 0)
 		return userfault;
 	if (userfault) {
-		bool notpresent_injected = false;
 		bool report_async = false;
 		bool pending_accept = false;
 		u32 token = 0;
 
-		if (!fault->prefetch && kvm_can_do_async_pf(vcpu) && kvm_can_deliver_async_pf(vcpu)) {
+		if (!fault->prefetch && kvm_can_do_async_pf(vcpu)) {
 			trace_kvm_try_async_get_page(fault->addr, fault->gfn);
 			if (kvm_userfault_async_pf_exists(vcpu, fault->gfn, &pending_accept)) {
 				// This should never happen
@@ -4645,9 +4644,8 @@ static int __kvm_mmu_faultin_pfn(struct kvm_vcpu *vcpu,
 				}
 				trace_kvm_async_pf_repeated_fault(fault->addr, fault->gfn);
 				kvm_make_request(KVM_REQ_APF_HALT, vcpu);
-
 				return RET_PF_RETRY;
-			} else if (kvm_arch_setup_async_pf(vcpu, fault, true, &notpresent_injected, &token)) {
+			} else if (kvm_arch_setup_async_pf(vcpu, fault, true, &token)) {
 				report_async = true;
 			} else {
 				WARN_ON(true);
@@ -4657,8 +4655,6 @@ static int __kvm_mmu_faultin_pfn(struct kvm_vcpu *vcpu,
 		kvm_mmu_prepare_userfault_exit(vcpu, fault);
 
 		if (report_async) {
-			if (notpresent_injected)
-				vcpu->run->memory_fault.flags |= KVM_MEMORY_EXIT_FLAG_APF_INJECTED;
 			vcpu->run->memory_fault.flags |= KVM_MEMORY_EXIT_FLAG_APF;
 			vcpu->run->memory_fault.size = token;
 		}
@@ -4685,13 +4681,13 @@ static int __kvm_mmu_faultin_pfn(struct kvm_vcpu *vcpu,
 	if (fault->pfn != KVM_PFN_ERR_NEEDS_IO)
 		return RET_PF_CONTINUE;
 
-	if (!fault->prefetch && kvm_can_do_async_pf(vcpu) && kvm_can_deliver_async_pf(vcpu)) {
+	if (!fault->prefetch && kvm_can_do_async_pf(vcpu)) {
 		trace_kvm_try_async_get_page(fault->addr, fault->gfn);
 		if (kvm_find_async_pf_gfn(vcpu, fault->gfn)) {
 			trace_kvm_async_pf_repeated_fault(fault->addr, fault->gfn);
 			kvm_make_request(KVM_REQ_APF_HALT, vcpu);
 			return RET_PF_RETRY;
-		} else if (kvm_arch_setup_async_pf(vcpu, fault, false, NULL, NULL)) {
+		} else if (kvm_arch_setup_async_pf(vcpu, fault, false, NULL)) {
 			return RET_PF_RETRY;
 		}
 	}
