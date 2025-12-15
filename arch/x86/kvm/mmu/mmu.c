@@ -4521,6 +4521,7 @@ void kvm_mmu_handle_apf_return(struct kvm_vcpu *vcpu)
 	}
 
 	kvm_accepted_async_pf(vcpu);
+	kvm_run->memory_fault.flags &= ~KVM_MEMORY_EXIT_FLAG_APF;
 }
 
 static bool kvm_arch_setup_async_pf(struct kvm_vcpu *vcpu,
@@ -4537,6 +4538,7 @@ static bool kvm_arch_setup_async_pf(struct kvm_vcpu *vcpu,
 	arch.error_code = fault->error_code;
 	arch.direct_map = vcpu->arch.mmu->root_role.direct;
 	arch.cr3 = kvm_mmu_get_guest_pgd(vcpu, vcpu->arch.mmu);
+	arch.state = 0;
 
 	return kvm_setup_async_pf(vcpu, fault->addr,
 				  kvm_vcpu_gfn_to_hva(vcpu, fault->gfn), &arch,

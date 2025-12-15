@@ -2378,7 +2378,7 @@ bool kvm_arch_async_page_not_present(struct kvm_vcpu *vcpu,
 void kvm_arch_async_page_present(struct kvm_vcpu *vcpu,
 				 struct kvm_async_pf *work);
 void async_pf_execute_vm_enter(struct kvm_vcpu *vcpu);
-void async_pf_execute_vm_exit(struct kvm_vcpu *vcpu, struct kvm_async_pf_ready *apf);
+void async_pf_execute_vm_exit(struct kvm_vcpu *vcpu, gpa_t apf);
 void kvm_arch_userfault_ready(struct kvm_vcpu *vcpu,
 			       struct kvm_async_pf *work);
 void kvm_arch_async_page_ready(struct kvm_vcpu *vcpu,

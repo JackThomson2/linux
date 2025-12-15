@@ -112,12 +112,12 @@ struct kvm_async_pf *async_pf_find_work_item_from_gfn(struct kvm_vcpu *vcpu, gfn
 	return NULL;
 }
 
-void async_pf_execute_vm_exit(struct kvm_vcpu *vcpu, struct kvm_async_pf_ready *apf_ready)
+void async_pf_execute_vm_exit(struct kvm_vcpu *vcpu, gpa_t gpa)
 {
 	bool first;
 	struct kvm_async_pf *apf;
 
-	gfn_t accepted_gfn = gpa_to_gfn(apf_ready->gpa);
+	gfn_t accepted_gfn = gpa_to_gfn(gpa);
 
 	spin_lock(&vcpu->async_pf.lock);
 
@@ -187,7 +187,6 @@ bool kvm_userfault_async_pf_exists(struct kvm_vcpu *vcpu, gfn_t gfn,
 void kvm_accepted_async_pf(struct kvm_vcpu *vcpu)
 {
 	struct kvm_async_pf *apf;
-
 	gfn_t accepted_gfn = gpa_to_gfn(vcpu->run->memory_fault.gpa);
 
 	spin_lock(&vcpu->async_pf.lock);
@@ -197,13 +196,11 @@ void kvm_accepted_async_pf(struct kvm_vcpu *vcpu)
 		WARN_ON(true);
 		spin_unlock(&vcpu->async_pf.lock);
 		return;
+	} else if (apf->arch.state == KVM_APF_UF_ACCEPTED) {
+		WARN_ON(true);
 	}
 
-	if (apf->arch.state != KVM_APF_UF_PENDING) {
-		WARN_ON(true);
-	} else {
-		apf->arch.state = KVM_APF_UF_ACCEPTED;
-	}
+	apf->arch.state = KVM_APF_UF_ACCEPTED;
 
 	spin_unlock(&vcpu->async_pf.lock);
 }
@@ -313,8 +310,10 @@ bool kvm_setup_async_pf(struct kvm_vcpu *vcpu, gpa_t cr2_or_gpa,
 	if (unlikely(kvm_is_error_hva(hva)))
 		return false;
 
-	if (unlikely(atomic_inc_return(&vcpu->async_pf.queued) > ASYNC_PF_PER_VCPU))
+	if (unlikely(atomic_inc_return(&vcpu->async_pf.queued) > ASYNC_PF_PER_VCPU)) {
+		pr_info_ratelimited("APF queue saturated\n");
 		goto failed_setup;
+	}
 
 	/*
 	 * do alloc nowait since if we are going to sleep anyway we
@@ -373,7 +372,7 @@ int kvm_async_pf_wakeup_all(struct kvm_vcpu *vcpu)
 	work->wakeup_all = true;
 	INIT_LIST_HEAD(&work->queue); /* for list_del to work */
 
-	first = list_empty(&vcpu->async_pf.done);
+	first = list_empty_careful(&vcpu->async_pf.done);
 	list_add_tail(&work->link, &vcpu->async_pf.done);
 	atomic_inc(&vcpu->async_pf.queued);
 	spin_unlock(&vcpu->async_pf.lock);
