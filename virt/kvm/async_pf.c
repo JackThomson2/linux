@@ -140,9 +140,9 @@ void async_pf_execute_vm_exit(struct kvm_vcpu *vcpu, gpa_t gpa)
 
 	first = list_empty(&vcpu->async_pf.done);
 	list_add_tail(&apf->link, &vcpu->async_pf.done);
+	spin_unlock(&vcpu->async_pf.lock);
 	if (!IS_ENABLED(CONFIG_KVM_ASYNC_PF_SYNC) && first)
 		kvm_arch_async_page_present_queued(vcpu);
-	spin_unlock(&vcpu->async_pf.lock);
 
 	trace_kvm_async_pf_completed(apf->addr, apf->cr2_or_gpa);
 
@@ -304,27 +304,19 @@ bool kvm_setup_async_pf(struct kvm_vcpu *vcpu, gpa_t cr2_or_gpa,
 			bool userfault)
 {
 	struct kvm_async_pf *work;
-	gfp_t flags = __GFP_NOWARN;
 
 	/* Arch specific code should not do async PF in this case */
 	if (unlikely(kvm_is_error_hva(hva)))
 		return false;
 
-	if (unlikely(atomic_inc_return(&vcpu->async_pf.queued) > ASYNC_PF_PER_VCPU)) {
-		pr_info_ratelimited("APF queue saturated\n");
+	if (unlikely(atomic_inc_return(&vcpu->async_pf.queued) > ASYNC_PF_PER_VCPU))
 		goto failed_setup;
-	}
 
 	/*
 	 * do alloc nowait since if we are going to sleep anyway we
 	 * may as well sleep faulting in page
 	 */
-	if (userfault)
-		flags |= GFP_KERNEL;
-	else
-		flags |= GFP_NOWAIT;
-
-	work = kmem_cache_zalloc(async_pf_cache, flags);
+	work = kmem_cache_zalloc(async_pf_cache, __GFP_NOWARN | GFP_NOWAIT);
 	if (unlikely(!work))
 		goto failed_setup;
 

@@ -4515,25 +4515,23 @@ void kvm_mmu_handle_apf_return(struct kvm_vcpu *vcpu)
 	if (likely(!(kvm_run->memory_fault.flags & KVM_MEMORY_EXIT_FLAG_APF)))
 		return;
 
+	kvm_run->memory_fault.flags &= ~KVM_MEMORY_EXIT_FLAG_APF;
+
 	if (kvm_run->memory_fault.flags & KVM_MEMORY_EXIT_FLAG_APF_REJECTED) {
 		kvm_clear_rejected_async_pf(vcpu);
 		return;
 	}
 
 	kvm_accepted_async_pf(vcpu);
-	kvm_run->memory_fault.flags &= ~KVM_MEMORY_EXIT_FLAG_APF;
 }
 
 static bool kvm_arch_setup_async_pf(struct kvm_vcpu *vcpu,
 				    struct kvm_page_fault *fault,
-				    bool userfault, u32 *token)
+				    bool userfault)
 {
 	struct kvm_arch_async_pf arch;
 
 	arch.token = alloc_apf_token(vcpu);
-	if (token)
-		*token = arch.token;
-
 	arch.gfn = fault->gfn;
 	arch.error_code = fault->error_code;
 	arch.direct_map = vcpu->arch.mmu->root_role.direct;
@@ -4634,7 +4632,6 @@ static int __kvm_mmu_faultin_pfn(struct kvm_vcpu *vcpu,
 	if (userfault) {
 		bool report_async = false;
 		bool pending_accept = false;
-		u32 token = 0;
 
 		if (!fault->prefetch && kvm_can_do_async_pf(vcpu)) {
 			trace_kvm_try_async_get_page(fault->addr, fault->gfn);
@@ -4647,7 +4644,7 @@ static int __kvm_mmu_faultin_pfn(struct kvm_vcpu *vcpu,
 				trace_kvm_async_pf_repeated_fault(fault->addr, fault->gfn);
 				kvm_make_request(KVM_REQ_APF_HALT, vcpu);
 				return RET_PF_RETRY;
-			} else if (kvm_arch_setup_async_pf(vcpu, fault, true, &token)) {
+			} else if (kvm_arch_setup_async_pf(vcpu, fault, true)) {
 				report_async = true;
 			}
 		}
@@ -4656,7 +4653,6 @@ static int __kvm_mmu_faultin_pfn(struct kvm_vcpu *vcpu,
 
 		if (report_async) {
 			vcpu->run->memory_fault.flags |= KVM_MEMORY_EXIT_FLAG_APF;
-			vcpu->run->memory_fault.size = token;
 		}
 
 		return -EFAULT;
@@ -4687,7 +4683,7 @@ static int __kvm_mmu_faultin_pfn(struct kvm_vcpu *vcpu,
 			trace_kvm_async_pf_repeated_fault(fault->addr, fault->gfn);
 			kvm_make_request(KVM_REQ_APF_HALT, vcpu);
 			return RET_PF_RETRY;
-		} else if (kvm_arch_setup_async_pf(vcpu, fault, false, NULL)) {
+		} else if (kvm_arch_setup_async_pf(vcpu, fault, false)) {
 			return RET_PF_RETRY;
 		}
 	}
