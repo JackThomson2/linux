@@ -5287,12 +5287,32 @@ static const struct super_operations shmem_ops = {
 #endif
 };
 
+#ifdef CONFIG_USERFAULTFD
+static bool shmem_can_userfault(struct vm_area_struct *vma, vm_flags_t vm_flags)
+{
+	/*
+	 * If user requested uffd-wp but not enabled pte markers for
+	 * uffd-wp, then shmem is not supported.
+	 */
+	if (!uffd_supports_wp_marker() && (vm_flags & VM_UFFD_WP))
+		return false;
+	return true;
+}
+
+static const struct vm_uffd_ops shmem_uffd_ops = {
+	.can_userfault	= shmem_can_userfault,
+};
+#endif
+
 static const struct vm_operations_struct shmem_vm_ops = {
 	.fault		= shmem_fault,
 	.map_pages	= filemap_map_pages,
 #ifdef CONFIG_NUMA
 	.set_policy     = shmem_set_policy,
 	.get_policy     = shmem_get_policy,
+#endif
+#ifdef CONFIG_USERFAULTFD
+	.uffd_ops	= &shmem_uffd_ops,
 #endif
 };
 
@@ -5302,6 +5322,9 @@ static const struct vm_operations_struct shmem_anon_vm_ops = {
 #ifdef CONFIG_NUMA
 	.set_policy     = shmem_set_policy,
 	.get_policy     = shmem_get_policy,
+#endif
+#ifdef CONFIG_USERFAULTFD
+	.uffd_ops	= &shmem_uffd_ops,
 #endif
 };
 
