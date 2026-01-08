@@ -224,7 +224,8 @@ void kvm_async_pf_reject(struct kvm_vcpu *vcpu)
 	spin_lock(&vcpu->async_pf.lock);
 	apf = async_pf_find_work_item_from_gfn(vcpu, gfn);
 
-	if (WARN_ON_ONCE(!apf || !apf->userfault)) {
+	if (WARN_ON_ONCE(!apf || !apf->userfault ||
+			 apf->uf_state != KVM_APF_UF_PENDING)) {
 		spin_unlock(&vcpu->async_pf.lock);
 		return;
 	}
@@ -361,7 +362,6 @@ failed_setup:
 int kvm_async_pf_wakeup_all(struct kvm_vcpu *vcpu)
 {
 	struct kvm_async_pf *work;
-	bool first;
 
 	spin_lock(&vcpu->async_pf.lock);
 
@@ -379,12 +379,11 @@ int kvm_async_pf_wakeup_all(struct kvm_vcpu *vcpu)
 	work->wakeup_all = true;
 	INIT_LIST_HEAD(&work->queue); /* for list_del to work */
 
-	first = list_empty(&vcpu->async_pf.done);
 	list_add_tail(&work->link, &vcpu->async_pf.done);
 	atomic_inc(&vcpu->async_pf.queued);
 	spin_unlock(&vcpu->async_pf.lock);
 
-	if (!IS_ENABLED(CONFIG_KVM_ASYNC_PF_SYNC) && first)
+	if (!IS_ENABLED(CONFIG_KVM_ASYNC_PF_SYNC))
 		kvm_arch_async_page_present_queued(vcpu);
 
 	return 0;
