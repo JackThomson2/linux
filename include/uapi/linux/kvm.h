@@ -1317,7 +1317,7 @@ struct kvm_vfio_spapr_tce {
 #define KVM_SET_SREGS             _IOW(KVMIO,  0x84, struct kvm_sregs)
 #define KVM_TRANSLATE             _IOWR(KVMIO, 0x85, struct kvm_translation)
 #define KVM_INTERRUPT             _IOW(KVMIO,  0x86, struct kvm_interrupt)
-#define KVM_ASYNC_PF_READY        _IOW(KVMIO,  0xd6, gpa_t)
+#define KVM_ASYNC_PF_READY        _IOW(KVMIO,  0xd6, __u64)
 #define KVM_GET_MSRS              _IOWR(KVMIO, 0x88, struct kvm_msrs)
 #define KVM_SET_MSRS              _IOW(KVMIO,  0x89, struct kvm_msrs)
 #define KVM_SET_CPUID             _IOW(KVMIO,  0x8a, struct kvm_cpuid)

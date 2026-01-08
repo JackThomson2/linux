@@ -4451,15 +4451,18 @@ static long kvm_vcpu_ioctl(struct file *filp,
 	if (r != -ENOIOCTLCMD)
 		return r;
 
-	// FIXME: x86 doesn't support async ioctls
-	// so running this before acquiring the vcpu mutex.
+	/*
+	 * KVM_ASYNC_PF_READY completes an async page fault from userspace.
+	 * This runs without vcpu->mutex as x86 doesn't support async ioctls,
+	 * and the APF spinlock provides sufficient synchronization.
+	 */
 	if (ioctl == KVM_ASYNC_PF_READY) {
-		gpa_t apf_gpa;
+		u64 apf_gpa;
+
 		if (copy_from_user(&apf_gpa, argp, sizeof(apf_gpa)))
 			return -EFAULT;
 
-		async_pf_execute_vm_exit(vcpu, apf_gpa);
-		return 0;
+		return async_pf_execute_vm_exit(vcpu, apf_gpa);
 	}
 
 	if (mutex_lock_killable(&vcpu->mutex))

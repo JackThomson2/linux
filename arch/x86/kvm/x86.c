@@ -13416,7 +13416,6 @@ static inline bool apf_pageready_slot_free(struct kvm_vcpu *vcpu)
 	return !val;
 }
 
-bool kvm_can_deliver_async_pf(struct kvm_vcpu *vcpu);
 bool kvm_can_deliver_async_pf(struct kvm_vcpu *vcpu)
 {
 

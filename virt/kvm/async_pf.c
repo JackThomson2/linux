@@ -112,21 +112,24 @@ struct kvm_async_pf *async_pf_find_work_item_from_gfn(struct kvm_vcpu *vcpu, gfn
 	return NULL;
 }
 
-void async_pf_execute_vm_exit(struct kvm_vcpu *vcpu, gpa_t gpa)
+int async_pf_execute_vm_exit(struct kvm_vcpu *vcpu, gpa_t gpa)
 {
 	bool first;
 	struct kvm_async_pf *apf;
-
 	gfn_t accepted_gfn = gpa_to_gfn(gpa);
 
 	spin_lock(&vcpu->async_pf.lock);
 
 	apf = async_pf_find_work_item_from_gfn(vcpu, accepted_gfn);
 
-	if (unlikely(!apf) || apf->arch.state == KVM_APF_UF_COMPLETED) {
-		WARN_ON(true);
+	if (unlikely(!apf)) {
 		spin_unlock(&vcpu->async_pf.lock);
-		return;
+		return -ENOENT;
+	}
+
+	if (unlikely(apf->arch.state == KVM_APF_UF_COMPLETED)) {
+		spin_unlock(&vcpu->async_pf.lock);
+		return -EALREADY;
 	}
 
 	apf->arch.state = KVM_APF_UF_COMPLETED;
@@ -147,6 +150,8 @@ void async_pf_execute_vm_exit(struct kvm_vcpu *vcpu, gpa_t gpa)
 	trace_kvm_async_pf_completed(apf->addr, apf->cr2_or_gpa);
 
 	__kvm_vcpu_wake_up(vcpu);
+
+	return 0;
 }
 
 static void kvm_flush_and_free_async_pf_work(struct kvm_async_pf *work)
