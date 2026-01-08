@@ -115,9 +115,9 @@ static struct kvm_async_pf *async_pf_find_work_item_from_gfn(struct kvm_vcpu *vc
 
 int kvm_async_pf_complete(struct kvm_vcpu *vcpu, gpa_t gpa)
 {
-	bool first;
 	struct kvm_async_pf *apf;
 	gfn_t gfn = gpa_to_gfn(gpa);
+	bool first;
 
 	spin_lock(&vcpu->async_pf.lock);
 
@@ -183,16 +183,15 @@ bool kvm_async_pf_userfault_exists(struct kvm_vcpu *vcpu, gfn_t gfn,
 				   bool *pending_accept)
 {
 	struct kvm_async_pf *apf;
-
-	*pending_accept = false;
+	bool exists;
 
 	spin_lock(&vcpu->async_pf.lock);
 	apf = async_pf_find_work_item_from_gfn(vcpu, gfn);
-	if (apf && apf->userfault)
-		*pending_accept = apf->uf_state < KVM_APF_UF_ACCEPTED;
+	exists = apf && apf->userfault;
+	*pending_accept = exists && apf->uf_state < KVM_APF_UF_ACCEPTED;
 	spin_unlock(&vcpu->async_pf.lock);
 
-	return apf && apf->userfault;
+	return exists;
 }
 
 void kvm_async_pf_accept(struct kvm_vcpu *vcpu)
@@ -249,20 +248,21 @@ void kvm_clear_async_pf_completion_queue(struct kvm_vcpu *vcpu)
 			list_first_entry(&vcpu->async_pf.queue,
 					 typeof(*work), queue);
 		list_del(&work->queue);
-		spin_unlock(&vcpu->async_pf.lock);
 
-		if (!work->userfault) {
+		if (work->userfault) {
+			/* Also remove from done list if completed */
+			if (work->uf_state == KVM_APF_UF_COMPLETED)
+				list_del(&work->link);
+			spin_unlock(&vcpu->async_pf.lock);
+			kmem_cache_free(async_pf_cache, work);
+		} else {
+			spin_unlock(&vcpu->async_pf.lock);
 #ifdef CONFIG_KVM_ASYNC_PF_SYNC
 			flush_work(&work->work);
 #else
 			if (cancel_work_sync(&work->work))
 				kmem_cache_free(async_pf_cache, work);
 #endif
-		} else {
-			/* If was in the done queue, also free here */
-			if (work->uf_state == KVM_APF_UF_COMPLETED)
-				list_del(&work->link);
-			kmem_cache_free(async_pf_cache, work);
 		}
 		spin_lock(&vcpu->async_pf.lock);
 	}
