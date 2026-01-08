@@ -111,11 +111,11 @@ static struct kvm_async_pf *async_pf_find_work_item_from_gfn(struct kvm_vcpu *vc
 	return NULL;
 }
 
-int async_pf_execute_vm_exit(struct kvm_vcpu *vcpu, gpa_t gpa)
+int kvm_async_pf_complete(struct kvm_vcpu *vcpu, gpa_t gpa)
 {
 	bool first;
 	struct kvm_async_pf *apf;
-	gfn_t accepted_gfn = gpa_to_gfn(gpa);
+	gfn_t gfn = gpa_to_gfn(gpa);
 
 	spin_lock(&vcpu->async_pf.lock);
 
@@ -124,9 +124,9 @@ int async_pf_execute_vm_exit(struct kvm_vcpu *vcpu, gpa_t gpa)
 		return -EBUSY;
 	}
 
-	apf = async_pf_find_work_item_from_gfn(vcpu, accepted_gfn);
+	apf = async_pf_find_work_item_from_gfn(vcpu, gfn);
 
-	if (unlikely(!apf)) {
+	if (unlikely(!apf || !apf->userfault)) {
 		spin_unlock(&vcpu->async_pf.lock);
 		return -ENOENT;
 	}
@@ -197,16 +197,17 @@ bool kvm_userfault_async_pf_exists(struct kvm_vcpu *vcpu, gfn_t gfn,
 void kvm_accepted_async_pf(struct kvm_vcpu *vcpu)
 {
 	struct kvm_async_pf *apf;
-	gfn_t accepted_gfn = gpa_to_gfn(vcpu->run->memory_fault.gpa);
+	gfn_t gfn = gpa_to_gfn(vcpu->run->memory_fault.gpa);
 
 	spin_lock(&vcpu->async_pf.lock);
-	apf = async_pf_find_work_item_from_gfn(vcpu, accepted_gfn);
+	apf = async_pf_find_work_item_from_gfn(vcpu, gfn);
 
 	/*
-	 * The APF must exist and not already be accepted. If either condition
-	 * fails, it indicates a bug in the VMM or a race we didn't handle.
+	 * The APF must exist, be a userfault, and not already be accepted.
+	 * If any condition fails, it indicates a bug in the VMM.
 	 */
-	if (WARN_ON_ONCE(!apf || apf->uf_state == KVM_APF_UF_ACCEPTED)) {
+	if (WARN_ON_ONCE(!apf || !apf->userfault ||
+			 apf->uf_state == KVM_APF_UF_ACCEPTED)) {
 		spin_unlock(&vcpu->async_pf.lock);
 		return;
 	}
@@ -218,12 +219,12 @@ void kvm_accepted_async_pf(struct kvm_vcpu *vcpu)
 void kvm_clear_rejected_async_pf(struct kvm_vcpu *vcpu)
 {
 	struct kvm_async_pf *apf;
-	gfn_t rejected_gfn = gpa_to_gfn(vcpu->run->memory_fault.gpa);
+	gfn_t gfn = gpa_to_gfn(vcpu->run->memory_fault.gpa);
 
 	spin_lock(&vcpu->async_pf.lock);
-	apf = async_pf_find_work_item_from_gfn(vcpu, rejected_gfn);
+	apf = async_pf_find_work_item_from_gfn(vcpu, gfn);
 
-	if (WARN_ON_ONCE(!apf)) {
+	if (WARN_ON_ONCE(!apf || !apf->userfault)) {
 		spin_unlock(&vcpu->async_pf.lock);
 		return;
 	}
@@ -287,10 +288,10 @@ void kvm_check_async_pf_completion(struct kvm_vcpu *vcpu)
 	struct kvm_async_pf *work;
 
 	spin_lock(&vcpu->async_pf.lock);
-	while (!list_empty_careful(&vcpu->async_pf.done) &&
-	      kvm_arch_can_dequeue_async_page_present(vcpu)) {
+	while (!list_empty(&vcpu->async_pf.done) &&
+	       kvm_arch_can_dequeue_async_page_present(vcpu)) {
 		work = list_first_entry(&vcpu->async_pf.done, typeof(*work),
-					      link);
+					link);
 		list_del(&work->link);
 		spin_unlock(&vcpu->async_pf.lock);
 

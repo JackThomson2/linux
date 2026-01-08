@@ -4462,7 +4462,7 @@ static long kvm_vcpu_ioctl(struct file *filp,
 		if (copy_from_user(&apf_gpa, argp, sizeof(apf_gpa)))
 			return -EFAULT;
 
-		return async_pf_execute_vm_exit(vcpu, apf_gpa);
+		return kvm_async_pf_complete(vcpu, apf_gpa);
 	}
 
 	if (mutex_lock_killable(&vcpu->mutex))

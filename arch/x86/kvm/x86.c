@@ -11509,11 +11509,8 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 
 	kvm_vcpu_srcu_read_lock(vcpu);
 
-	switch (kvm_run->exit_reason) {
-	case KVM_EXIT_MEMORY_FAULT:
+	if (kvm_run->exit_reason == KVM_EXIT_MEMORY_FAULT)
 		kvm_mmu_handle_apf_return(vcpu);
-		break;
-	}
 
 	if (unlikely(vcpu->arch.mp_state == KVM_MP_STATE_UNINITIALIZED)) {
 		if (!vcpu->wants_to_run) {
@@ -13418,7 +13415,6 @@ static inline bool apf_pageready_slot_free(struct kvm_vcpu *vcpu)
 
 bool kvm_can_deliver_async_pf(struct kvm_vcpu *vcpu)
 {
-
 	if (!kvm_pv_async_pf_enabled(vcpu))
 		return false;
 
