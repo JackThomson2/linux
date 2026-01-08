@@ -203,16 +203,17 @@ void kvm_async_pf_accept(struct kvm_vcpu *vcpu)
 	apf = async_pf_find_work_item_from_gfn(vcpu, gfn);
 
 	/*
-	 * The APF must exist, be a userfault, and be in PENDING state.
-	 * If any condition fails, it indicates a bug in the VMM.
+	 * The APF must exist and be a userfault. If it's already COMPLETED,
+	 * userspace used the ioctl to complete it before re-entering the VM.
 	 */
-	if (WARN_ON_ONCE(!apf || !apf->userfault ||
-			 apf->uf_state != KVM_APF_UF_PENDING)) {
+	if (WARN_ON_ONCE(!apf || !apf->userfault)) {
 		spin_unlock(&vcpu->async_pf.lock);
 		return;
 	}
 
-	apf->uf_state = KVM_APF_UF_ACCEPTED;
+	if (apf->uf_state == KVM_APF_UF_PENDING)
+		apf->uf_state = KVM_APF_UF_ACCEPTED;
+
 	spin_unlock(&vcpu->async_pf.lock);
 }
 
