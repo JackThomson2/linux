@@ -2524,6 +2524,6 @@ long kvm_arch_vcpu_pre_fault_memory(struct kvm_vcpu *vcpu,
 	if (ret < 0)
 		return ret;
 
-	end = ALIGN(range->gpa, page_size) + page_size;
+	end = (range->gpa & ~(page_size - 1)) + page_size;
 	return min(range->size, end - range->gpa);
 }

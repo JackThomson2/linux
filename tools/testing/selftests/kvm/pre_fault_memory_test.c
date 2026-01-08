@@ -19,7 +19,7 @@
 
 /* Storage of test info to share with guest code */
 struct test_config {
-	int page_size;
+	uint64_t page_size;
 	uint64_t test_size;
 	uint64_t test_num_pages;
 };
@@ -224,13 +224,13 @@ static void __test_pre_fault_memory(enum vm_guest_mode guest_mode, void *arg)
 	if (p->private)
 		vm_mem_set_private(vm, guest_test_phys_mem, test_config.test_size);
 
-	pre_fault_memory(vcpu, guest_test_phys_mem, test_config.test_size, 0, p->private);
+	pre_fault_memory(vcpu, guest_test_phys_mem, 0, test_config.test_size, 0, p->private);
 	/* Test pre-faulting over an already faulted range */
-	pre_fault_memory(vcpu, guest_test_phys_mem, test_config.test_size, 0, p->private);
-	pre_fault_memory(vcpu, guest_test_phys_mem +
+	pre_fault_memory(vcpu, guest_test_phys_mem, 0, test_config.test_size, 0, p->private);
+	pre_fault_memory(vcpu, guest_test_phys_mem,
 			 test_config.test_size - test_config.page_size,
 			 test_config.page_size * 2, test_config.page_size, p->private);
-	pre_fault_memory(vcpu, guest_test_phys_mem + test_config.test_size,
+	pre_fault_memory(vcpu, guest_test_phys_mem, test_config.test_size,
 			 test_config.page_size, test_config.page_size, p->private);
 
 	vcpu_args_set(vcpu, 1, guest_test_virt_mem);
