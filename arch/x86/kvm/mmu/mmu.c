@@ -4635,11 +4635,12 @@ static int __kvm_mmu_faultin_pfn(struct kvm_vcpu *vcpu,
 		if (!fault->prefetch && kvm_can_do_async_pf(vcpu)) {
 			trace_kvm_try_async_get_page(fault->addr, fault->gfn);
 			if (kvm_userfault_async_pf_exists(vcpu, fault->gfn, &pending_accept)) {
-				// This should never happen
-				if (unlikely(pending_accept)) {
-					WARN_ON(true);
+				/*
+				 * An APF exists but userspace hasn't accepted it yet.
+				 * This shouldn't happen - halt and let userspace catch up.
+				 */
+				if (WARN_ON_ONCE(pending_accept))
 					return RET_PF_RETRY;
-				}
 				trace_kvm_async_pf_repeated_fault(fault->addr, fault->gfn);
 				kvm_make_request(KVM_REQ_APF_HALT, vcpu);
 				return RET_PF_RETRY;
@@ -4650,9 +4651,8 @@ static int __kvm_mmu_faultin_pfn(struct kvm_vcpu *vcpu,
 
 		kvm_mmu_prepare_userfault_exit(vcpu, fault);
 
-		if (report_async) {
+		if (report_async)
 			vcpu->run->memory_fault.flags |= KVM_MEMORY_EXIT_FLAG_APF;
-		}
 
 		return -EFAULT;
 	}

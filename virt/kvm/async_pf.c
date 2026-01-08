@@ -184,9 +184,10 @@ static void kvm_flush_and_free_async_pf_work(struct kvm_async_pf *work)
 }
 
 bool kvm_userfault_async_pf_exists(struct kvm_vcpu *vcpu, gfn_t gfn,
-				   bool *pending_accept) 
+				   bool *pending_accept)
 {
 	struct kvm_async_pf *apf;
+
 	spin_lock(&vcpu->async_pf.lock);
 	apf = async_pf_find_work_item_from_gfn(vcpu, gfn);
 	if (apf)
@@ -203,38 +204,37 @@ void kvm_accepted_async_pf(struct kvm_vcpu *vcpu)
 	spin_lock(&vcpu->async_pf.lock);
 	apf = async_pf_find_work_item_from_gfn(vcpu, accepted_gfn);
 
-	if (unlikely(apf == NULL)) {
-		WARN_ON(true);
+	/*
+	 * The APF must exist and not already be accepted. If either condition
+	 * fails, it indicates a bug in the VMM or a race we didn't handle.
+	 */
+	if (WARN_ON_ONCE(!apf || apf->arch.state == KVM_APF_UF_ACCEPTED)) {
 		spin_unlock(&vcpu->async_pf.lock);
 		return;
-	} else if (apf->arch.state == KVM_APF_UF_ACCEPTED) {
-		WARN_ON(true);
 	}
 
 	apf->arch.state = KVM_APF_UF_ACCEPTED;
-
 	spin_unlock(&vcpu->async_pf.lock);
 }
 
 void kvm_clear_rejected_async_pf(struct kvm_vcpu *vcpu)
 {
 	struct kvm_async_pf *apf;
-	u32 rejected_gfn = gpa_to_gfn(vcpu->run->memory_fault.gpa);
+	gfn_t rejected_gfn = gpa_to_gfn(vcpu->run->memory_fault.gpa);
 
 	spin_lock(&vcpu->async_pf.lock);
 	apf = async_pf_find_work_item_from_gfn(vcpu, rejected_gfn);
 
-	if (unlikely(apf == NULL)) {
-		WARN_ON(true);
+	if (WARN_ON_ONCE(!apf)) {
 		spin_unlock(&vcpu->async_pf.lock);
 		return;
 	}
 
 	list_del(&apf->queue);
 	spin_unlock(&vcpu->async_pf.lock);
+
 	kvm_arch_async_page_present(vcpu, apf);
 	atomic_dec(&vcpu->async_pf.queued);
-
 	kmem_cache_free(async_pf_cache, apf);
 }
 
