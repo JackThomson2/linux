@@ -245,8 +245,9 @@ struct kvm_async_pf {
 	bool   wakeup_all;
 	bool   notpresent_injected;
 	bool   userfault;
+	u8     uf_state;
 };
-bool kvm_userfault_async_pf_exists(struct kvm_vcpu *vcpu, 
+bool kvm_userfault_async_pf_exists(struct kvm_vcpu *vcpu,
 				   gfn_t gfn, bool *pending_accept);
 void kvm_accepted_async_pf(struct kvm_vcpu *vcpu);
 void kvm_clear_rejected_async_pf(struct kvm_vcpu *vcpu);

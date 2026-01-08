@@ -98,16 +98,14 @@ static void async_pf_execute(struct work_struct *work)
 	__kvm_vcpu_wake_up(vcpu);
 }
 
-struct kvm_async_pf *async_pf_find_work_item_from_gfn(struct kvm_vcpu *vcpu, gfn_t gfn);
-struct kvm_async_pf *async_pf_find_work_item_from_gfn(struct kvm_vcpu *vcpu, gfn_t gfn)
+static struct kvm_async_pf *async_pf_find_work_item_from_gfn(struct kvm_vcpu *vcpu,
+							     gfn_t gfn)
 {
 	struct kvm_async_pf *apf;
-	struct kvm_async_pf *tmp;
 
-	list_for_each_entry_safe_reverse(apf, tmp, &vcpu->async_pf.queue, queue) {
-		if (apf->arch.gfn == gfn) {
+	list_for_each_entry(apf, &vcpu->async_pf.queue, queue) {
+		if (apf->arch.gfn == gfn)
 			return apf;
-		}
 	}
 
 	return NULL;
@@ -133,12 +131,12 @@ int async_pf_execute_vm_exit(struct kvm_vcpu *vcpu, gpa_t gpa)
 		return -ENOENT;
 	}
 
-	if (unlikely(apf->arch.state == KVM_APF_UF_COMPLETED)) {
+	if (unlikely(apf->uf_state == KVM_APF_UF_COMPLETED)) {
 		spin_unlock(&vcpu->async_pf.lock);
 		return -EALREADY;
 	}
 
-	apf->arch.state = KVM_APF_UF_COMPLETED;
+	apf->uf_state = KVM_APF_UF_COMPLETED;
 
 	/*
 	 * Notify and kick the vCPU even if faulting in the page failed, e.g.
@@ -191,7 +189,7 @@ bool kvm_userfault_async_pf_exists(struct kvm_vcpu *vcpu, gfn_t gfn,
 	spin_lock(&vcpu->async_pf.lock);
 	apf = async_pf_find_work_item_from_gfn(vcpu, gfn);
 	if (apf)
-		*pending_accept = apf->arch.state < KVM_APF_UF_ACCEPTED;
+		*pending_accept = apf->uf_state < KVM_APF_UF_ACCEPTED;
 	spin_unlock(&vcpu->async_pf.lock);
 	return apf != NULL;
 }
@@ -208,12 +206,12 @@ void kvm_accepted_async_pf(struct kvm_vcpu *vcpu)
 	 * The APF must exist and not already be accepted. If either condition
 	 * fails, it indicates a bug in the VMM or a race we didn't handle.
 	 */
-	if (WARN_ON_ONCE(!apf || apf->arch.state == KVM_APF_UF_ACCEPTED)) {
+	if (WARN_ON_ONCE(!apf || apf->uf_state == KVM_APF_UF_ACCEPTED)) {
 		spin_unlock(&vcpu->async_pf.lock);
 		return;
 	}
 
-	apf->arch.state = KVM_APF_UF_ACCEPTED;
+	apf->uf_state = KVM_APF_UF_ACCEPTED;
 	spin_unlock(&vcpu->async_pf.lock);
 }
 
@@ -244,7 +242,7 @@ void kvm_clear_async_pf_completion_queue(struct kvm_vcpu *vcpu)
 	vcpu->async_pf.clearing = true;
 
 	/* cancel outstanding work queue item */
-	while (!list_empty_careful(&vcpu->async_pf.queue)) {
+	while (!list_empty(&vcpu->async_pf.queue)) {
 		struct kvm_async_pf *work =
 			list_first_entry(&vcpu->async_pf.queue,
 					 typeof(*work), queue);
@@ -260,20 +258,20 @@ void kvm_clear_async_pf_completion_queue(struct kvm_vcpu *vcpu)
 #endif
 		} else {
 			/* If was in the done queue, also free here */
-			if (work->arch.state == KVM_APF_UF_COMPLETED)
+			if (work->uf_state == KVM_APF_UF_COMPLETED)
 				list_del(&work->link);
 			kmem_cache_free(async_pf_cache, work);
 		}
 		spin_lock(&vcpu->async_pf.lock);
 	}
 
-	while (!list_empty_careful(&vcpu->async_pf.done)) {
+	while (!list_empty(&vcpu->async_pf.done)) {
 		struct kvm_async_pf *work =
 			list_first_entry(&vcpu->async_pf.done,
 					 typeof(*work), link);
 		list_del(&work->link);
 		spin_unlock(&vcpu->async_pf.lock);
-		WARN_ON(work->userfault);
+		WARN_ON_ONCE(work->userfault);
 
 		kvm_flush_and_free_async_pf_work(work);
 		spin_lock(&vcpu->async_pf.lock);
@@ -362,9 +360,10 @@ int kvm_async_pf_wakeup_all(struct kvm_vcpu *vcpu)
 {
 	struct kvm_async_pf *work;
 	bool first;
+
 	spin_lock(&vcpu->async_pf.lock);
 
-	if (!list_empty_careful(&vcpu->async_pf.done)) {
+	if (!list_empty(&vcpu->async_pf.done)) {
 		spin_unlock(&vcpu->async_pf.lock);
 		return 0;
 	}
@@ -378,7 +377,7 @@ int kvm_async_pf_wakeup_all(struct kvm_vcpu *vcpu)
 	work->wakeup_all = true;
 	INIT_LIST_HEAD(&work->queue); /* for list_del to work */
 
-	first = list_empty_careful(&vcpu->async_pf.done);
+	first = list_empty(&vcpu->async_pf.done);
 	list_add_tail(&work->link, &vcpu->async_pf.done);
 	atomic_inc(&vcpu->async_pf.queued);
 	spin_unlock(&vcpu->async_pf.lock);

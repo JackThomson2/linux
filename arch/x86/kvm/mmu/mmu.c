@@ -4511,13 +4511,16 @@ static u32 alloc_apf_token(struct kvm_vcpu *vcpu)
 void kvm_mmu_handle_apf_return(struct kvm_vcpu *vcpu)
 {
 	struct kvm_run *kvm_run = vcpu->run;
+	bool rejected;
 
 	if (likely(!(kvm_run->memory_fault.flags & KVM_MEMORY_EXIT_FLAG_APF)))
 		return;
 
-	kvm_run->memory_fault.flags &= ~KVM_MEMORY_EXIT_FLAG_APF;
+	rejected = kvm_run->memory_fault.flags & KVM_MEMORY_EXIT_FLAG_APF_REJECTED;
+	kvm_run->memory_fault.flags &= ~(KVM_MEMORY_EXIT_FLAG_APF |
+					 KVM_MEMORY_EXIT_FLAG_APF_REJECTED);
 
-	if (kvm_run->memory_fault.flags & KVM_MEMORY_EXIT_FLAG_APF_REJECTED) {
+	if (rejected) {
 		kvm_clear_rejected_async_pf(vcpu);
 		return;
 	}
@@ -4536,26 +4539,10 @@ static bool kvm_arch_setup_async_pf(struct kvm_vcpu *vcpu,
 	arch.error_code = fault->error_code;
 	arch.direct_map = vcpu->arch.mmu->root_role.direct;
 	arch.cr3 = kvm_mmu_get_guest_pgd(vcpu, vcpu->arch.mmu);
-	arch.state = 0;
 
 	return kvm_setup_async_pf(vcpu, fault->addr,
 				  kvm_vcpu_gfn_to_hva(vcpu, fault->gfn), &arch,
 				  userfault);
-}
-
-void kvm_arch_userfault_ready(struct kvm_vcpu *vcpu, struct kvm_async_pf *work)
-{
-	int r;
-
-	r = kvm_mmu_reload(vcpu);
-	if (unlikely(r))
-		return;
-
-	r = kvm_mmu_do_page_fault(vcpu, work->cr2_or_gpa, work->arch.error_code,
-				  true, NULL, NULL);
-
-	if (r == RET_PF_FIXED)
-		vcpu->stat.pf_fixed++;
 }
 
 void kvm_arch_async_page_ready(struct kvm_vcpu *vcpu, struct kvm_async_pf *work)
