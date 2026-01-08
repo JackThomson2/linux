@@ -2464,24 +2464,24 @@ void kvm_toggle_cache(struct kvm_vcpu *vcpu, bool was_enabled)
 long kvm_arch_vcpu_pre_fault_memory(struct kvm_vcpu *vcpu,
 				    struct kvm_pre_fault_memory *range)
 {
-	int ret = 0;
 	struct kvm_vcpu_fault_info *fault_info = &vcpu->arch.fault;
 	struct kvm_s2_trans nested_trans, *nested = NULL;
-	struct kvm_memory_slot *memslot;
 	unsigned long page_size = PAGE_SIZE;
-	gfn_t gfn = gpa_to_gfn(range->gpa);
+	struct kvm_memory_slot *memslot;
 	phys_addr_t ipa = range->gpa;
 	phys_addr_t end;
 	hva_t hva;
+	gfn_t gfn;
+	int ret;
 
 	if (vcpu_is_protected(vcpu))
 		return -EPERM;
 
 	/* Generate a synthetic abort for the pre-fault address */
-	fault_info->esr_el2 = ESR_ELx_EC_DABT_LOW | 
+	fault_info->esr_el2 = (ESR_ELx_EC_DABT_LOW << ESR_ELx_EC_SHIFT) |
 		ESR_ELx_FSC_FAULT_L(KVM_PGTABLE_LAST_LEVEL);
 	fault_info->hpfar_el2 = HPFAR_EL2_NS |
-			FIELD_PREP(HPFAR_EL2_FIPA, ipa >> 12);
+		FIELD_PREP(HPFAR_EL2_FIPA, ipa >> 12);
 
 	/*
 	 * We may prefault on a shadow stage 2 page table if we are
@@ -2492,46 +2492,38 @@ long kvm_arch_vcpu_pre_fault_memory(struct kvm_vcpu *vcpu,
 	 * If the shadow stage 2 page table walk faults, then we return
 	 * -EFAULT
 	 */
-	if (kvm_is_nested_s2_mmu(vcpu->kvm,vcpu->arch.hw_mmu) &&
+	if (kvm_is_nested_s2_mmu(vcpu->kvm, vcpu->arch.hw_mmu) &&
 	    vcpu->arch.hw_mmu->nested_stage2_enabled) {
 		ret = kvm_walk_nested_s2(vcpu, ipa, &nested_trans);
-		if (ret) {
-			ret = -EFAULT;
-			goto out;
-		}
+		if (ret)
+			return -EFAULT;
 
 		ipa = kvm_s2_trans_output(&nested_trans);
 		nested = &nested_trans;
 	}
 
-	if (ipa >= kvm_phys_size(vcpu->arch.hw_mmu)) {
-		ret = -ENOENT;
-		goto out;
-	}
+	if (ipa >= kvm_phys_size(vcpu->arch.hw_mmu))
+		return -ENOENT;
 
+	gfn = ipa >> PAGE_SHIFT;
 	memslot = gfn_to_memslot(vcpu->kvm, gfn);
-	if (!memslot) {
-		ret = -ENOENT;
-		goto out;
-	}
+	if (!memslot)
+		return -ENOENT;
 
 	if (kvm_slot_has_gmem(memslot)) {
 		ret = gmem_abort(vcpu, ipa, nested, memslot, false);
 	} else {
 		hva = gfn_to_hva_memslot_prot(memslot, gfn, NULL);
-		if (kvm_is_error_hva(hva)) {
-			ret = -EFAULT;
-			goto out;
-		}
-		ret = user_mem_abort(vcpu, ipa, nested, memslot, &page_size, hva,
-				     false);
+		if (kvm_is_error_hva(hva))
+			return -EFAULT;
+
+		ret = user_mem_abort(vcpu, ipa, nested, memslot, &page_size,
+				     hva, false);
 	}
 
 	if (ret < 0)
-		goto out;
+		return ret;
 
 	end = ALIGN(range->gpa, page_size) + page_size;
-	ret = min(range->size, end - range->gpa);
-out:
-	return ret;
+	return min(range->size, end - range->gpa);
 }

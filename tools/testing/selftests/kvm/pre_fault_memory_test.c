@@ -24,7 +24,7 @@ struct test_config {
 	uint64_t test_num_pages;
 };
 
-struct test_config test_config;
+static struct test_config test_config;
 
 static void guest_code(uint64_t base_gpa)
 {
@@ -263,26 +263,26 @@ static void __test_pre_fault_memory(enum vm_guest_mode guest_mode, void *arg)
 static void test_pre_fault_memory(unsigned long vm_type, enum vm_mem_backing_src_type backing_src,
 				  bool private)
 {
-	if (vm_type && !(kvm_check_cap(KVM_CAP_VM_TYPES) & BIT(vm_type))) {
-		pr_info("Skipping tests for vm_type 0x%lx\n", vm_type);
-		return;
-	}
-
 	struct test_params p = {
 		.vm_type = vm_type,
 		.private = private,
 		.mem_backing_src = backing_src,
 	};
 
+	if (vm_type && !(kvm_check_cap(KVM_CAP_VM_TYPES) & BIT(vm_type))) {
+		pr_info("Skipping tests for vm_type 0x%lx\n", vm_type);
+		return;
+	}
+
 	for_each_guest_mode(__test_pre_fault_memory, &p);
 }
 
 int main(int argc, char *argv[])
 {
-	TEST_REQUIRE(kvm_check_cap(KVM_CAP_PRE_FAULT_MEMORY));
-
-	int opt;
 	enum vm_mem_backing_src_type backing = VM_MEM_SRC_ANONYMOUS;
+	int opt;
+
+	TEST_REQUIRE(kvm_check_cap(KVM_CAP_PRE_FAULT_MEMORY));
 
 	while ((opt = getopt(argc, argv, "m:")) != -1) {
 		switch (opt) {
