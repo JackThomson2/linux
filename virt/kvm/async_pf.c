@@ -103,6 +103,8 @@ static struct kvm_async_pf *async_pf_find_work_item_from_gfn(struct kvm_vcpu *vc
 {
 	struct kvm_async_pf *apf;
 
+	lockdep_assert_held(&vcpu->async_pf.lock);
+
 	list_for_each_entry(apf, &vcpu->async_pf.queue, queue) {
 		if (apf->arch.gfn == gfn)
 			return apf;
@@ -138,10 +140,6 @@ int kvm_async_pf_complete(struct kvm_vcpu *vcpu, gpa_t gpa)
 
 	apf->uf_state = KVM_APF_UF_COMPLETED;
 
-	/*
-	 * Notify and kick the vCPU even if faulting in the page failed, e.g.
-	 * so that the vCPU can retry the fault synchronously.
-	 */
 	if (IS_ENABLED(CONFIG_KVM_ASYNC_PF_SYNC))
 		kvm_arch_async_page_present(vcpu, apf);
 
@@ -181,20 +179,23 @@ static void kvm_flush_and_free_async_pf_work(struct kvm_async_pf *work)
 	kmem_cache_free(async_pf_cache, work);
 }
 
-bool kvm_userfault_async_pf_exists(struct kvm_vcpu *vcpu, gfn_t gfn,
+bool kvm_async_pf_userfault_exists(struct kvm_vcpu *vcpu, gfn_t gfn,
 				   bool *pending_accept)
 {
 	struct kvm_async_pf *apf;
 
+	*pending_accept = false;
+
 	spin_lock(&vcpu->async_pf.lock);
 	apf = async_pf_find_work_item_from_gfn(vcpu, gfn);
-	if (apf)
+	if (apf && apf->userfault)
 		*pending_accept = apf->uf_state < KVM_APF_UF_ACCEPTED;
 	spin_unlock(&vcpu->async_pf.lock);
-	return apf != NULL;
+
+	return apf && apf->userfault;
 }
 
-void kvm_accepted_async_pf(struct kvm_vcpu *vcpu)
+void kvm_async_pf_accept(struct kvm_vcpu *vcpu)
 {
 	struct kvm_async_pf *apf;
 	gfn_t gfn = gpa_to_gfn(vcpu->run->memory_fault.gpa);
@@ -216,7 +217,7 @@ void kvm_accepted_async_pf(struct kvm_vcpu *vcpu)
 	spin_unlock(&vcpu->async_pf.lock);
 }
 
-void kvm_clear_rejected_async_pf(struct kvm_vcpu *vcpu)
+void kvm_async_pf_reject(struct kvm_vcpu *vcpu)
 {
 	struct kvm_async_pf *apf;
 	gfn_t gfn = gpa_to_gfn(vcpu->run->memory_fault.gpa);
@@ -278,9 +279,9 @@ void kvm_clear_async_pf_completion_queue(struct kvm_vcpu *vcpu)
 		spin_lock(&vcpu->async_pf.lock);
 	}
 
+	atomic_set(&vcpu->async_pf.queued, 0);
 	vcpu->async_pf.clearing = false;
 	spin_unlock(&vcpu->async_pf.lock);
-	atomic_set(&vcpu->async_pf.queued, 0);
 }
 
 void kvm_check_async_pf_completion(struct kvm_vcpu *vcpu)

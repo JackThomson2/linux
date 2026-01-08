@@ -4521,11 +4521,11 @@ void kvm_mmu_handle_apf_return(struct kvm_vcpu *vcpu)
 					 KVM_MEMORY_EXIT_FLAG_APF_REJECTED);
 
 	if (rejected) {
-		kvm_clear_rejected_async_pf(vcpu);
+		kvm_async_pf_reject(vcpu);
 		return;
 	}
 
-	kvm_accepted_async_pf(vcpu);
+	kvm_async_pf_accept(vcpu);
 }
 
 static bool kvm_arch_setup_async_pf(struct kvm_vcpu *vcpu,
@@ -4621,7 +4621,7 @@ static int __kvm_mmu_faultin_pfn(struct kvm_vcpu *vcpu,
 
 		if (!fault->prefetch && kvm_can_do_async_pf(vcpu)) {
 			trace_kvm_try_async_get_page(fault->addr, fault->gfn);
-			if (kvm_userfault_async_pf_exists(vcpu, fault->gfn, &pending_accept)) {
+			if (kvm_async_pf_userfault_exists(vcpu, fault->gfn, &pending_accept)) {
 				/*
 				 * An APF exists but userspace hasn't accepted it yet.
 				 * This shouldn't happen - halt and let userspace catch up.
