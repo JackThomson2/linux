@@ -372,6 +372,7 @@ struct kvm_vcpu {
 		struct list_head queue;
 		struct list_head done;
 		spinlock_t lock;
+		bool clearing;
 	} async_pf;
 #endif
 

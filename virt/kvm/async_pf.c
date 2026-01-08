@@ -41,6 +41,7 @@ void kvm_async_pf_vcpu_init(struct kvm_vcpu *vcpu)
 	INIT_LIST_HEAD(&vcpu->async_pf.queue);
 	spin_lock_init(&vcpu->async_pf.lock);
 	atomic_set(&vcpu->async_pf.queued, 0);
+	vcpu->async_pf.clearing = false;
 }
 
 static void async_pf_execute(struct work_struct *work)
@@ -119,6 +120,11 @@ int async_pf_execute_vm_exit(struct kvm_vcpu *vcpu, gpa_t gpa)
 	gfn_t accepted_gfn = gpa_to_gfn(gpa);
 
 	spin_lock(&vcpu->async_pf.lock);
+
+	if (unlikely(vcpu->async_pf.clearing)) {
+		spin_unlock(&vcpu->async_pf.lock);
+		return -EBUSY;
+	}
 
 	apf = async_pf_find_work_item_from_gfn(vcpu, accepted_gfn);
 
@@ -235,6 +241,8 @@ void kvm_clear_rejected_async_pf(struct kvm_vcpu *vcpu)
 void kvm_clear_async_pf_completion_queue(struct kvm_vcpu *vcpu)
 {
 	spin_lock(&vcpu->async_pf.lock);
+	vcpu->async_pf.clearing = true;
+
 	/* cancel outstanding work queue item */
 	while (!list_empty_careful(&vcpu->async_pf.queue)) {
 		struct kvm_async_pf *work =
@@ -251,10 +259,9 @@ void kvm_clear_async_pf_completion_queue(struct kvm_vcpu *vcpu)
 				kmem_cache_free(async_pf_cache, work);
 #endif
 		} else {
-			// If was in the done queue, also free here
-			if (work->arch.state == KVM_APF_UF_COMPLETED) {
+			/* If was in the done queue, also free here */
+			if (work->arch.state == KVM_APF_UF_COMPLETED)
 				list_del(&work->link);
-			}
 			kmem_cache_free(async_pf_cache, work);
 		}
 		spin_lock(&vcpu->async_pf.lock);
@@ -271,6 +278,8 @@ void kvm_clear_async_pf_completion_queue(struct kvm_vcpu *vcpu)
 		kvm_flush_and_free_async_pf_work(work);
 		spin_lock(&vcpu->async_pf.lock);
 	}
+
+	vcpu->async_pf.clearing = false;
 	spin_unlock(&vcpu->async_pf.lock);
 	atomic_set(&vcpu->async_pf.queued, 0);
 }
