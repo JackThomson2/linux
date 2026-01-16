@@ -447,6 +447,8 @@ struct kvm_run {
 		struct {
 #define KVM_MEMORY_EXIT_FLAG_PRIVATE	(1ULL << 3)
 #define KVM_MEMORY_EXIT_FLAG_USERFAULT	(1ULL << 4)
+#define KVM_MEMORY_EXIT_FLAG_APF	(1ULL << 5)
+#define KVM_MEMORY_EXIT_FLAG_APF_ACCEPT	(1ULL << 6)
 			__u64 flags;
 			__u64 gpa;
 			__u64 size;
@@ -1315,6 +1317,7 @@ struct kvm_vfio_spapr_tce {
 #define KVM_SET_SREGS             _IOW(KVMIO,  0x84, struct kvm_sregs)
 #define KVM_TRANSLATE             _IOWR(KVMIO, 0x85, struct kvm_translation)
 #define KVM_INTERRUPT             _IOW(KVMIO,  0x86, struct kvm_interrupt)
+#define KVM_ASYNC_PF_READY        _IOW(KVMIO,  0xd6, __u64)
 #define KVM_GET_MSRS              _IOWR(KVMIO, 0x88, struct kvm_msrs)
 #define KVM_SET_MSRS              _IOW(KVMIO,  0x89, struct kvm_msrs)
 #define KVM_SET_CPUID             _IOW(KVMIO,  0x8a, struct kvm_cpuid)
