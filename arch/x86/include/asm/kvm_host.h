@@ -1021,6 +1021,7 @@ struct kvm_vcpu_arch {
 		bool send_always;
 		bool delivery_as_pf_vmexit;
 		bool pageready_pending;
+		bool userfault_pending_response;
 	} apf;
 
 	/* OSVW MSRs (AMD only) */
