@@ -11,6 +11,12 @@
 #ifndef __KVM_ASYNC_PF_H__
 #define __KVM_ASYNC_PF_H__
 
+enum kvm_apf_uf_state {
+	KVM_APF_UF_PENDING = 0,
+	KVM_APF_UF_ACCEPTED,
+	KVM_APF_UF_COMPLETED,
+};
+
 #ifdef CONFIG_KVM_ASYNC_PF
 int kvm_async_pf_init(void);
 void kvm_async_pf_deinit(void);
