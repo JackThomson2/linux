@@ -262,7 +262,7 @@ struct kvm_async_pf {
 bool kvm_async_pf_userfault_exists(struct kvm_vcpu *vcpu,
 				   gfn_t gfn);
 int kvm_async_pf_accept(struct kvm_vcpu *vcpu, gpa_t gpa);
-int kvm_async_pf_sync_complete(struct kvm_vcpu *vcpu, gpa_t gpa);
+void kvm_async_pf_autocomplete_pending(struct kvm_vcpu *vcpu);
 int kvm_async_pf_complete(struct kvm_vcpu *vcpu, gpa_t gpa);
 void kvm_clear_async_pf_completion_queue(struct kvm_vcpu *vcpu);
 void kvm_check_async_pf_completion(struct kvm_vcpu *vcpu);

@@ -6202,6 +6202,38 @@ static int kvm_get_reg_list(struct kvm_vcpu *vcpu,
 	return 0;
 }
 
+long kvm_arch_vcpu_async_ioctl(struct file *filp, unsigned int ioctl,
+			       unsigned long arg)
+{
+	struct kvm_vcpu *vcpu = filp->private_data;
+	void __user *argp = (void __user *)arg;
+
+	if (ioctl == KVM_ASYNC_PF) {
+		struct kvm_async_pf_req req;
+
+		if (copy_from_user(&req, argp, sizeof(req)))
+			return -EFAULT;
+
+		if (req.flags || req.reserved[0] || req.reserved[1])
+			return -EINVAL;
+
+		if (req.gpa & ~PAGE_MASK)
+			return -EINVAL;
+
+		/*
+		 * Only READY runs without vcpu->mutex — it must be callable
+		 * from a non-vCPU thread.  ACCEPT is handled under
+		 * vcpu->mutex in kvm_arch_vcpu_ioctl().
+		 */
+		if (req.op == KVM_APF_OP_READY)
+			return kvm_async_pf_complete(vcpu, req.gpa);
+
+		return -ENOIOCTLCMD;
+	}
+
+	return -ENOIOCTLCMD;
+}
+
 long kvm_arch_vcpu_ioctl(struct file *filp,
 			 unsigned int ioctl, unsigned long arg)
 {
@@ -6220,6 +6252,28 @@ long kvm_arch_vcpu_ioctl(struct file *filp,
 
 	u.buffer = NULL;
 	switch (ioctl) {
+	case KVM_ASYNC_PF: {
+		struct kvm_async_pf_req req;
+
+		r = -EFAULT;
+		if (copy_from_user(&req, argp, sizeof(req)))
+			goto out;
+
+		r = -EINVAL;
+		if (req.flags || req.reserved[0] || req.reserved[1])
+			goto out;
+		if (req.gpa & ~PAGE_MASK)
+			goto out;
+
+		switch (req.op) {
+		case KVM_APF_OP_ACCEPT:
+			r = kvm_async_pf_accept(vcpu, req.gpa);
+			break;
+		default:
+			r = -EINVAL;
+		}
+		break;
+	}
 	case KVM_GET_LAPIC: {
 		r = -EINVAL;
 		if (!lapic_in_kernel(vcpu))
@@ -11954,6 +12008,8 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 	r = kvm_x86_vcpu_pre_run(vcpu);
 	if (r <= 0)
 		goto out;
+
+	kvm_async_pf_autocomplete_pending(vcpu);
 
 	r = vcpu_run(vcpu);
 

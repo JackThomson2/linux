@@ -1620,29 +1620,28 @@ struct kvm_create_guest_memfd {
  * Userfaultfd async page fault ioctl.
  *
  * When a vCPU exits with KVM_EXIT_MEMORY_FAULT and KVM_MEMORY_EXIT_FLAG_APF
- * set, an async page fault has been created. Userspace must respond with
- * one of ACCEPT or SYNC_COMPLETE before re-entering the vCPU:
+ * set, an async page fault has been created. Userspace may respond before
+ * re-entering the vCPU:
  *
  * KVM_APF_OP_ACCEPT - Userspace will resolve the page asynchronously.
  *   The vCPU re-enters in a halted state while the page is being resolved.
  *   When the page is ready, userspace calls KVM_APF_OP_READY to wake
  *   the vCPU.
  *
- * KVM_APF_OP_SYNC_COMPLETE - Userspace has already resolved the page
- *   fault synchronously (e.g. via UFFDIO_COPY or equivalent). KVM will
- *   complete the APF immediately, allowing the guest to retry the faulting
- *   instruction. The page MUST be present when this ioctl is called.
- *
  * KVM_APF_OP_READY - Signal that an async page fault previously accepted
  *   via KVM_APF_OP_ACCEPT has been resolved. The argument is the GPA
  *   that was faulted. This wakes the vCPU if it was halted waiting for
  *   the page.
+ *
+ * If userspace resolves the page synchronously (e.g. via UFFDIO_COPY) and
+ * re-enters KVM_RUN without calling ACCEPT, KVM will auto-complete the
+ * pending APF on re-entry. The guest retries the faulting instruction and
+ * finds the page present.
  */
 #define KVM_ASYNC_PF		_IOW(KVMIO, 0xd6, struct kvm_async_pf_req)
 
 #define KVM_APF_OP_READY		0
 #define KVM_APF_OP_ACCEPT		1
-#define KVM_APF_OP_SYNC_COMPLETE	2
 
 struct kvm_async_pf_req {
 	__u64 gpa;

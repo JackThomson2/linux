@@ -218,39 +218,33 @@ int kvm_async_pf_accept(struct kvm_vcpu *vcpu, gpa_t gpa)
 }
 
 /*
- * Synchronous completion: userspace resolved the fault (e.g. UFFDIO_COPY)
- * before re-entering the guest. Complete the APF immediately so the guest
- * retries and finds the page present.
+ * Auto-complete any userfault APFs still in PENDING state.
+ *
+ * Called on KVM_RUN re-entry. If userspace resolved the page (e.g. via
+ * UFFDIO_COPY) and re-enters without calling ACCEPT, auto-complete the
+ * APF so the guest retries and finds the page present.
  */
-int kvm_async_pf_sync_complete(struct kvm_vcpu *vcpu, gpa_t gpa)
+void kvm_async_pf_autocomplete_pending(struct kvm_vcpu *vcpu)
 {
 	struct kvm_async_pf *apf;
-	gfn_t gfn = gpa_to_gfn(gpa);
-	bool first;
+	bool wakeup = false;
+
+	if (likely(!vcpu->async_pf.userfault_enabled ||
+		   !atomic_read(&vcpu->async_pf.queued)))
+		return;
 
 	spin_lock(&vcpu->async_pf.lock);
-	apf = async_pf_find_work_item_from_gfn(vcpu, gfn);
-
-	if (!apf || !apf->userfault) {
-		spin_unlock(&vcpu->async_pf.lock);
-		return -ENOENT;
+	list_for_each_entry(apf, &vcpu->async_pf.queue, queue) {
+		if (apf->userfault && apf->uf_state == KVM_APF_UF_PENDING) {
+			apf->uf_state = KVM_APF_UF_COMPLETED;
+			list_add_tail(&apf->link, &vcpu->async_pf.done);
+			wakeup = true;
+		}
 	}
-
-	if (apf->uf_state != KVM_APF_UF_PENDING) {
-		spin_unlock(&vcpu->async_pf.lock);
-		return -EINVAL;
-	}
-
-	apf->uf_state = KVM_APF_UF_COMPLETED;
-	first = list_empty(&vcpu->async_pf.done);
-	list_add_tail(&apf->link, &vcpu->async_pf.done);
 	spin_unlock(&vcpu->async_pf.lock);
 
-	if (first)
+	if (wakeup)
 		kvm_arch_async_page_present_queued(vcpu);
-
-	__kvm_vcpu_wake_up(vcpu);
-	return 0;
 }
 
 void kvm_clear_async_pf_completion_queue(struct kvm_vcpu *vcpu)
