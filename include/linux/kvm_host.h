@@ -363,7 +363,7 @@ struct kvm_vcpu {
 
 #ifdef CONFIG_KVM_ASYNC_PF
 	struct {
-		u32 queued;
+		atomic_t queued;
 		struct list_head queue;
 		struct list_head done;
 		spinlock_t lock;
