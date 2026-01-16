@@ -4511,21 +4511,21 @@ static u32 alloc_apf_token(struct kvm_vcpu *vcpu)
 void kvm_mmu_handle_apf_return(struct kvm_vcpu *vcpu)
 {
 	struct kvm_run *kvm_run = vcpu->run;
-	bool rejected;
+	bool accepted;
 
 	if (likely(!(kvm_run->memory_fault.flags & KVM_MEMORY_EXIT_FLAG_APF)))
 		return;
 
-	rejected = kvm_run->memory_fault.flags & KVM_MEMORY_EXIT_FLAG_APF_REJECTED;
+	accepted = kvm_run->memory_fault.flags & KVM_MEMORY_EXIT_FLAG_APF_ACCEPT;
 	kvm_run->memory_fault.flags &= ~(KVM_MEMORY_EXIT_FLAG_APF |
-					 KVM_MEMORY_EXIT_FLAG_APF_REJECTED);
+					 KVM_MEMORY_EXIT_FLAG_APF_ACCEPT);
 
-	if (rejected) {
-		kvm_async_pf_reject(vcpu);
+	if (accepted) {
+		kvm_async_pf_accept(vcpu);
 		return;
 	}
 
-	kvm_async_pf_accept(vcpu);
+	kvm_async_pf_reject(vcpu);
 }
 
 static bool kvm_arch_setup_async_pf(struct kvm_vcpu *vcpu,
