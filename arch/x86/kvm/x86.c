@@ -11526,6 +11526,11 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 	kvm_load_guest_fpu(vcpu);
 
 	kvm_vcpu_srcu_read_lock(vcpu);
+
+	if (unlikely(kvm_run->exit_reason == KVM_EXIT_MEMORY_FAULT &&
+		     (kvm_run->memory_fault.flags & KVM_MEMORY_EXIT_FLAG_APF)))
+		kvm_mmu_handle_apf_return(vcpu);
+
 	if (unlikely(vcpu->arch.mp_state == KVM_MP_STATE_UNINITIALIZED)) {
 		if (!vcpu->wants_to_run) {
 			r = -EINTR;
