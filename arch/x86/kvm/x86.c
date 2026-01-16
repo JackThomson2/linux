@@ -5925,6 +5925,24 @@ static int kvm_vcpu_ioctl_enable_cap(struct kvm_vcpu *vcpu,
 	}
 }
 
+long kvm_arch_vcpu_async_ioctl(struct file *filp, unsigned int ioctl,
+			       unsigned long arg)
+{
+	struct kvm_vcpu *vcpu = filp->private_data;
+	void __user *argp = (void __user *)arg;
+
+	if (ioctl == KVM_ASYNC_PF_READY) {
+		u64 apf_gpa;
+
+		if (copy_from_user(&apf_gpa, argp, sizeof(apf_gpa)))
+			return -EFAULT;
+
+		return kvm_async_pf_complete(vcpu, apf_gpa);
+	}
+
+	return -ENOIOCTLCMD;
+}
+
 long kvm_arch_vcpu_ioctl(struct file *filp,
 			 unsigned int ioctl, unsigned long arg)
 {
