@@ -234,6 +234,18 @@ struct kvm_io_device *kvm_io_bus_get_dev(struct kvm *kvm, enum kvm_bus bus_idx,
 					 gpa_t addr);
 
 #ifdef CONFIG_KVM_ASYNC_PF
+/*
+ * Userfaultfd async page fault state machine:
+ *   PENDING: APF created, waiting for userspace to accept
+ *   ACCEPTED: Userspace accepted, waiting for page ready
+ *   COMPLETED: Page ready, APF on done list
+ */
+enum kvm_apf_uf_state {
+	KVM_APF_UF_PENDING = 0,
+	KVM_APF_UF_ACCEPTED,
+	KVM_APF_UF_COMPLETED,
+};
+
 struct kvm_async_pf {
 	struct work_struct work;
 	struct list_head link;
@@ -243,13 +255,20 @@ struct kvm_async_pf {
 	unsigned long addr;
 	struct kvm_arch_async_pf arch;
 	bool   wakeup_all;
-	bool notpresent_injected;
+	bool   notpresent_injected;
+	bool   userfault;
+	enum kvm_apf_uf_state uf_state;
 };
-
+bool kvm_async_pf_userfault_exists(struct kvm_vcpu *vcpu,
+				   gfn_t gfn, bool *pending_accept);
+void kvm_async_pf_accept(struct kvm_vcpu *vcpu);
+void kvm_async_pf_reject(struct kvm_vcpu *vcpu);
+int kvm_async_pf_complete(struct kvm_vcpu *vcpu, gpa_t gpa);
 void kvm_clear_async_pf_completion_queue(struct kvm_vcpu *vcpu);
 void kvm_check_async_pf_completion(struct kvm_vcpu *vcpu);
 bool kvm_setup_async_pf(struct kvm_vcpu *vcpu, gpa_t cr2_or_gpa,
-			unsigned long hva, struct kvm_arch_async_pf *arch);
+			unsigned long hva, struct kvm_arch_async_pf *arch,
+			bool userfault);
 int kvm_async_pf_wakeup_all(struct kvm_vcpu *vcpu);
 #endif
 
@@ -367,6 +386,7 @@ struct kvm_vcpu {
 		struct list_head queue;
 		struct list_head done;
 		spinlock_t lock;
+		bool clearing;
 	} async_pf;
 #endif
 
