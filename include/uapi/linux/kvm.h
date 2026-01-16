@@ -447,6 +447,7 @@ struct kvm_run {
 		struct {
 #define KVM_MEMORY_EXIT_FLAG_PRIVATE	(1ULL << 3)
 #define KVM_MEMORY_EXIT_FLAG_USERFAULT	(1ULL << 4)
+#define KVM_MEMORY_EXIT_FLAG_APF	(1ULL << 5)
 			__u64 flags;
 			__u64 gpa;
 			__u64 size;
@@ -1613,6 +1614,9 @@ struct kvm_create_guest_memfd {
 };
 
 #define KVM_PRE_FAULT_MEMORY	_IOWR(KVMIO, 0xd5, struct kvm_pre_fault_memory)
+#define KVM_ASYNC_PF_READY	_IOW(KVMIO,  0xd6, __u64)
+#define KVM_ASYNC_PF_ACCEPT	_IOW(KVMIO,  0xd7, __u64)
+#define KVM_ASYNC_PF_REJECT	_IOW(KVMIO,  0xd8, __u64)
 
 struct kvm_pre_fault_memory {
 	__u64 gpa;
