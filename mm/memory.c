@@ -5280,9 +5280,12 @@ static vm_fault_t __do_fault(struct vm_fault *vmf)
 
 	ret = vma->vm_ops->fault(vmf);
 	if (unlikely(ret & (VM_FAULT_ERROR | VM_FAULT_NOPAGE | VM_FAULT_RETRY |
-			    VM_FAULT_DONE_COW | VM_FAULT_UFFD_MINOR))) {
+			    VM_FAULT_DONE_COW | VM_FAULT_UFFD_MINOR |
+			    VM_FAULT_UFFD_MISSING))) {
 		if (ret & VM_FAULT_UFFD_MINOR)
 			return handle_userfault(vmf, VM_UFFD_MINOR);
+		if (ret & VM_FAULT_UFFD_MISSING)
+			return handle_userfault(vmf, VM_UFFD_MISSING);
 		return ret;
 	}
 

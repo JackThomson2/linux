@@ -1525,6 +1525,8 @@ typedef __bitwise unsigned int vm_fault_t;
  * @VM_FAULT_COMPLETED:		->fault completed, meanwhile mmap lock released
  * @VM_FAULT_UFFD_MINOR:	->fault did not modify page tables and needs
  *				handle_userfault(VM_UFFD_MINOR) to complete
+ * @VM_FAULT_UFFD_MISSING:	->fault did not modify page tables and needs
+ *				handle_userfault(VM_UFFD_MISSING) to complete
  * @VM_FAULT_HINDEX_MASK:	mask HINDEX value
  *
  */
@@ -1544,8 +1546,10 @@ enum vm_fault_reason {
 	VM_FAULT_COMPLETED      = (__force vm_fault_t)0x004000,
 #ifdef CONFIG_USERFAULTFD
 	VM_FAULT_UFFD_MINOR	= (__force vm_fault_t)0x008000,
+	VM_FAULT_UFFD_MISSING	= (__force vm_fault_t)0x010000,
 #else
 	VM_FAULT_UFFD_MINOR	= (__force vm_fault_t)0x000000,
+	VM_FAULT_UFFD_MISSING	= (__force vm_fault_t)0x000000,
 #endif
 	VM_FAULT_HINDEX_MASK    = (__force vm_fault_t)0x0f0000,
 };
@@ -1572,7 +1576,8 @@ enum vm_fault_reason {
 	{ VM_FAULT_DONE_COW,            "DONE_COW" },	\
 	{ VM_FAULT_NEEDDSYNC,           "NEEDDSYNC" },	\
 	{ VM_FAULT_COMPLETED,           "COMPLETED" },	\
-	{ VM_FAULT_UFFD_MINOR,		"UFFD_MINOR" }
+	{ VM_FAULT_UFFD_MINOR,		"UFFD_MINOR" }, \
+	{ VM_FAULT_UFFD_MISSING,	"UFFD_MISSING" }
 
 struct vm_special_mapping {
 	const char *name;	/* The name, e.g. "[vdso]". */
