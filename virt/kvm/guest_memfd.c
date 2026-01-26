@@ -627,6 +627,12 @@ static int kvm_gmem_filemap_add(struct folio *folio,
 		return err;
 	}
 
+	err = kvm_gmem_folio_zap_direct_map(folio);
+	if (err) {
+		folio_unlock(folio);
+		return err;
+	}
+
 	return 0;
 }
 
