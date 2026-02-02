@@ -118,6 +118,22 @@ int kvm_async_pf_complete(struct kvm_vcpu *vcpu, gpa_t gpa)
 	struct kvm_async_pf *apf;
 	gfn_t gfn = gpa_to_gfn(gpa);
 	bool first;
+	u64 expected, pending;
+
+	/* Try to resolve via pending state first */
+	expected = (u64)gfn << 2;
+	pending = atomic64_cmpxchg(&vcpu->async_pf.pending_apf, expected, expected | 1);
+	if (unlikely(pending == expected)) {
+		/* pr_warn_ratelimited("kvm: APF ioctl beat vcpu re-entry\n"); */
+		return 0;
+	}
+
+	/* APF being created - yield until it's on the list */
+	while (unlikely((pending >> 2) == gfn && (pending & 2))) {
+		/* pr_warn_ratelimited("kvm: APF ioctl looping waiting on vcpu to create APF\n"); */
+		cond_resched();
+		pending = atomic64_read(&vcpu->async_pf.pending_apf);
+	}
 
 	spin_lock(&vcpu->async_pf.lock);
 
@@ -133,12 +149,12 @@ int kvm_async_pf_complete(struct kvm_vcpu *vcpu, gpa_t gpa)
 		return -ENOENT;
 	}
 
-	if (unlikely(apf->uf_state == KVM_APF_UF_COMPLETED)) {
+	if (unlikely(apf->uf_completed)) {
 		spin_unlock(&vcpu->async_pf.lock);
 		return -EALREADY;
 	}
 
-	apf->uf_state = KVM_APF_UF_COMPLETED;
+	apf->uf_completed = true;
 
 	if (IS_ENABLED(CONFIG_KVM_ASYNC_PF_SYNC))
 		kvm_arch_async_page_present(vcpu, apf);
@@ -179,8 +195,7 @@ static void kvm_flush_and_free_async_pf_work(struct kvm_async_pf *work)
 	kmem_cache_free(async_pf_cache, work);
 }
 
-bool kvm_async_pf_userfault_exists(struct kvm_vcpu *vcpu, gfn_t gfn,
-				   bool *pending_accept)
+bool kvm_async_pf_userfault_exists(struct kvm_vcpu *vcpu, gfn_t gfn)
 {
 	struct kvm_async_pf *apf;
 	bool exists;
@@ -188,55 +203,9 @@ bool kvm_async_pf_userfault_exists(struct kvm_vcpu *vcpu, gfn_t gfn,
 	spin_lock(&vcpu->async_pf.lock);
 	apf = async_pf_find_work_item_from_gfn(vcpu, gfn);
 	exists = apf && apf->userfault;
-	*pending_accept = exists && apf->uf_state < KVM_APF_UF_ACCEPTED;
 	spin_unlock(&vcpu->async_pf.lock);
 
 	return exists;
-}
-
-void kvm_async_pf_accept(struct kvm_vcpu *vcpu)
-{
-	struct kvm_async_pf *apf;
-	gfn_t gfn = gpa_to_gfn(vcpu->run->memory_fault.gpa);
-
-	spin_lock(&vcpu->async_pf.lock);
-	apf = async_pf_find_work_item_from_gfn(vcpu, gfn);
-
-	/*
-	 * The APF must exist and be a userfault. If it's already COMPLETED,
-	 * userspace used the ioctl to complete it before re-entering the VM.
-	 */
-	if (WARN_ON_ONCE(!apf || !apf->userfault)) {
-		spin_unlock(&vcpu->async_pf.lock);
-		return;
-	}
-
-	if (apf->uf_state == KVM_APF_UF_PENDING)
-		apf->uf_state = KVM_APF_UF_ACCEPTED;
-
-	spin_unlock(&vcpu->async_pf.lock);
-}
-
-void kvm_async_pf_reject(struct kvm_vcpu *vcpu)
-{
-	struct kvm_async_pf *apf;
-	gfn_t gfn = gpa_to_gfn(vcpu->run->memory_fault.gpa);
-
-	spin_lock(&vcpu->async_pf.lock);
-	apf = async_pf_find_work_item_from_gfn(vcpu, gfn);
-
-	if (WARN_ON_ONCE(!apf || !apf->userfault ||
-			 apf->uf_state != KVM_APF_UF_PENDING)) {
-		spin_unlock(&vcpu->async_pf.lock);
-		return;
-	}
-
-	list_del(&apf->queue);
-	spin_unlock(&vcpu->async_pf.lock);
-
-	kvm_arch_async_page_present(vcpu, apf);
-	atomic_dec(&vcpu->async_pf.queued);
-	kmem_cache_free(async_pf_cache, apf);
 }
 
 void kvm_clear_async_pf_completion_queue(struct kvm_vcpu *vcpu)
@@ -253,7 +222,7 @@ void kvm_clear_async_pf_completion_queue(struct kvm_vcpu *vcpu)
 
 		if (work->userfault) {
 			/* Also remove from done list if completed */
-			if (work->uf_state == KVM_APF_UF_COMPLETED)
+			if (work->uf_completed)
 				list_del(&work->link);
 			spin_unlock(&vcpu->async_pf.lock);
 			kmem_cache_free(async_pf_cache, work);
@@ -321,12 +290,14 @@ bool kvm_setup_async_pf(struct kvm_vcpu *vcpu, gpa_t cr2_or_gpa,
 {
 	struct kvm_async_pf *work;
 
-	/* Arch specific code should not do async PF in this case */
-	if (unlikely(kvm_is_error_hva(hva)))
-		return false;
+	if (!userfault) {
+		/* Arch specific code should not do async PF in this case */
+		if (unlikely(kvm_is_error_hva(hva)))
+			return false;
 
-	if (unlikely(atomic_inc_return(&vcpu->async_pf.queued) > ASYNC_PF_PER_VCPU))
-		goto failed_setup;
+		if (unlikely(atomic_inc_return(&vcpu->async_pf.queued) > ASYNC_PF_PER_VCPU))
+			goto failed_setup;
+	}
 
 	/*
 	 * do alloc nowait since if we are going to sleep anyway we
@@ -356,7 +327,8 @@ bool kvm_setup_async_pf(struct kvm_vcpu *vcpu, gpa_t cr2_or_gpa,
 	return true;
 
 failed_setup:
-	atomic_dec(&vcpu->async_pf.queued);
+	if (!userfault)
+		atomic_dec(&vcpu->async_pf.queued);
 	return false;
 }
 

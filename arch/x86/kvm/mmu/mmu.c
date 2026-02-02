@@ -4508,21 +4508,61 @@ static u32 alloc_apf_token(struct kvm_vcpu *vcpu)
 	return (vcpu->arch.apf.id++ << 12) | vcpu->vcpu_id;
 }
 
+/*
+ * Pending APF states encoded in atomic64:
+ *   0                = no pending
+ *   (gfn << 2)       = pending, waiting for accept
+ *   (gfn << 2) | 1   = resolved before APF created
+ *   (gfn << 2) | 2   = APF being created
+ */
+#define APF_PENDING_RESOLVED	1
+#define APF_PENDING_CREATING	2
+
 void kvm_mmu_handle_apf_return(struct kvm_vcpu *vcpu)
 {
 	struct kvm_run *kvm_run = vcpu->run;
-	bool accepted;
+	gpa_t gpa;
+	gfn_t gfn;
+	struct kvm_arch_async_pf arch;
+	bool had_slot, accepted;
+	u64 pending, expected;
 
+	had_slot = kvm_run->memory_fault.flags & KVM_MEMORY_EXIT_FLAG_APF;
 	accepted = kvm_run->memory_fault.flags & KVM_MEMORY_EXIT_FLAG_APF_ACCEPT;
 	kvm_run->memory_fault.flags &= ~(KVM_MEMORY_EXIT_FLAG_APF |
 					 KVM_MEMORY_EXIT_FLAG_APF_ACCEPT);
 
-	if (accepted) {
-		kvm_async_pf_accept(vcpu);
+	if (!had_slot)
+		return;
+
+	if (!accepted) {
+		atomic64_set(&vcpu->async_pf.pending_apf, 0);
+		atomic_dec(&vcpu->async_pf.queued);
 		return;
 	}
 
-	kvm_async_pf_reject(vcpu);
+	gpa = kvm_run->memory_fault.gpa;
+	gfn = gpa_to_gfn(gpa);
+	expected = (u64)gfn << 2;
+
+	/* Transition to "creating" state */
+	pending = atomic64_cmpxchg(&vcpu->async_pf.pending_apf, expected,
+				   expected | APF_PENDING_CREATING);
+	if (pending & APF_PENDING_RESOLVED) {
+		/* pr_warn_ratelimited("kvm: APF already resolved before re-entry\n"); */
+		atomic64_set(&vcpu->async_pf.pending_apf, 0);
+		atomic_dec(&vcpu->async_pf.queued);
+		return;
+	}
+
+	arch.token = alloc_apf_token(vcpu);
+	arch.gfn = gfn;
+	arch.error_code = 0;
+	arch.direct_map = vcpu->arch.mmu->root_role.direct;
+	arch.cr3 = kvm_mmu_get_guest_pgd(vcpu, vcpu->arch.mmu);
+
+	kvm_setup_async_pf(vcpu, gpa, vcpu->async_pf.hva, &arch, true);
+	atomic64_set(&vcpu->async_pf.pending_apf, 0);
 }
 
 static bool kvm_arch_setup_async_pf(struct kvm_vcpu *vcpu,
@@ -4613,32 +4653,29 @@ static int __kvm_mmu_faultin_pfn(struct kvm_vcpu *vcpu,
 	if (userfault < 0)
 		return userfault;
 	if (userfault) {
-		bool report_async = false;
-		bool pending_accept = false;
+		bool can_apf = false;
 
 		if (!fault->prefetch && kvm_can_do_async_pf(vcpu)) {
-			trace_kvm_try_async_get_page(fault->addr, fault->gfn);
-			if (kvm_async_pf_userfault_exists(vcpu, fault->gfn, &pending_accept)) {
-				/*
-				 * An APF exists but userspace hasn't accepted it yet.
-				 * This shouldn't happen - halt and let userspace catch up.
-				 */
-				if (WARN_ON_ONCE(pending_accept)) {
-					kvm_make_request(KVM_REQ_APF_HALT, vcpu);
-					return RET_PF_RETRY;
-				}
+			if (kvm_async_pf_userfault_exists(vcpu, fault->gfn)) {
 				trace_kvm_async_pf_repeated_fault(fault->addr, fault->gfn);
 				kvm_make_request(KVM_REQ_APF_HALT, vcpu);
 				return RET_PF_RETRY;
-			} else if (kvm_arch_setup_async_pf(vcpu, fault, true)) {
-				report_async = true;
+			}
+
+			vcpu->async_pf.hva = kvm_vcpu_gfn_to_hva(vcpu, fault->gfn);
+			if (!kvm_is_error_hva(vcpu->async_pf.hva)) {
+				can_apf = atomic_inc_return(&vcpu->async_pf.queued) <= ASYNC_PF_PER_VCPU;
+				if (!can_apf)
+					atomic_dec(&vcpu->async_pf.queued);
 			}
 		}
 
 		kvm_mmu_prepare_userfault_exit(vcpu, fault);
 
-		if (report_async)
+		if (can_apf) {
+			atomic64_set(&vcpu->async_pf.pending_apf, (u64)fault->gfn << 2);
 			vcpu->run->memory_fault.flags |= KVM_MEMORY_EXIT_FLAG_APF;
+		}
 
 		return -EFAULT;
 	}
