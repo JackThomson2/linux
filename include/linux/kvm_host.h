@@ -270,6 +270,8 @@ bool kvm_setup_async_pf(struct kvm_vcpu *vcpu, gpa_t cr2_or_gpa,
 			unsigned long hva, struct kvm_arch_async_pf *arch,
 			bool userfault);
 int kvm_async_pf_wakeup_all(struct kvm_vcpu *vcpu);
+int kvm_apf_set_eventfd(struct kvm_vcpu *vcpu, struct kvm_apf_eventfd *args);
+bool kvm_apf_signal_exitless(struct kvm_vcpu *vcpu, gpa_t gpa, u64 flags);
 #endif
 
 #ifdef CONFIG_KVM_GENERIC_MMU_NOTIFIER
@@ -387,6 +389,10 @@ struct kvm_vcpu {
 		struct list_head done;
 		spinlock_t lock;
 		bool clearing;
+		/* Exitless APF support */
+		struct eventfd_ctx *eventfd;
+		struct kvm_apf_ring *ring;
+		struct page *ring_pinned_page;
 	} async_pf;
 #endif
 

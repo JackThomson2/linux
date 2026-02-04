@@ -4413,8 +4413,11 @@ static int kvm_wait_for_vcpu_online(struct kvm_vcpu *vcpu)
 
 	mutex_unlock(&vcpu->mutex);
 
-	if (WARN_ON_ONCE(!kvm_get_vcpu(kvm, vcpu->vcpu_idx)))
+	if (WARN_ON_ONCE(!kvm_get_vcpu(kvm, vcpu->vcpu_idx))) {
+		pr_warn("kvm_wait_for_vcpu_online: vcpu_idx=%d, online_vcpus=%d\n",
+			vcpu->vcpu_idx, atomic_read(&kvm->online_vcpus));
 		return -EIO;
+	}
 
 	return 0;
 }
@@ -4428,11 +4431,21 @@ static long kvm_vcpu_ioctl(struct file *filp,
 	struct kvm_fpu *fpu = NULL;
 	struct kvm_sregs *kvm_sregs = NULL;
 
-	if (vcpu->kvm->mm != current->mm || vcpu->kvm->vm_dead)
-		return -EIO;
-
 	if (unlikely(_IOC_TYPE(ioctl) != KVMIO))
 		return -EINVAL;
+
+	/*
+	 * Handle KVM_SET_APF_EVENTFD before the mm check - allow external
+	 * handlers with a valid vcpu fd to register for APF notifications.
+	 */
+	if (ioctl == KVM_SET_APF_EVENTFD || ioctl == KVM_ASYNC_PF_READY) {
+		if (vcpu->kvm->vm_dead)
+			return -EIO;
+		return kvm_arch_vcpu_async_ioctl(filp, ioctl, arg);
+	}
+
+	if (vcpu->kvm->mm != current->mm || vcpu->kvm->vm_dead)
+		return -EIO;
 
 	/*
 	 * Wait for the vCPU to be online before handling the ioctl(), as KVM

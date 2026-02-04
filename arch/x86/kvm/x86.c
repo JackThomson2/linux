@@ -5940,6 +5940,15 @@ long kvm_arch_vcpu_async_ioctl(struct file *filp, unsigned int ioctl,
 		return kvm_async_pf_complete(vcpu, apf_gpa);
 	}
 
+	if (ioctl == KVM_SET_APF_EVENTFD) {
+		struct kvm_apf_eventfd args;
+
+		if (copy_from_user(&args, argp, sizeof(args)))
+			return -EFAULT;
+
+		return kvm_apf_set_eventfd(vcpu, &args);
+	}
+
 	return -ENOIOCTLCMD;
 }
 

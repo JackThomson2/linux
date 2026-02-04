@@ -4621,15 +4621,28 @@ static int __kvm_mmu_faultin_pfn(struct kvm_vcpu *vcpu,
 			if (kvm_async_pf_userfault_exists(vcpu, fault->gfn, &pending_accept)) {
 				/*
 				 * An APF exists for this GFN. If userspace hasn't
-				 * accepted it yet, something is wrong - warn once.
+				 * accepted it yet and we're not using exitless APF,
+				 * something is wrong - warn once.
 				 */
-				WARN_ON_ONCE(pending_accept);
+				WARN_ON_ONCE(pending_accept && !vcpu->async_pf.eventfd);
 				trace_kvm_async_pf_repeated_fault(fault->addr, fault->gfn);
 				kvm_make_request(KVM_REQ_APF_HALT, vcpu);
 				return RET_PF_RETRY;
 			} else if (kvm_arch_setup_async_pf(vcpu, fault, true)) {
 				report_async = true;
 			}
+		}
+
+		/*
+		 * Try exitless notification via eventfd. If successful,
+		 * just retry - the guest will handle the APF and can
+		 * continue running other tasks.
+		 */
+		if (report_async &&
+		    kvm_apf_signal_exitless(vcpu, fault->gfn << PAGE_SHIFT,
+					    KVM_MEMORY_EXIT_FLAG_USERFAULT |
+					    KVM_MEMORY_EXIT_FLAG_APF)) {
+			return RET_PF_RETRY;
 		}
 
 		kvm_mmu_prepare_userfault_exit(vcpu, fault);

@@ -13,6 +13,9 @@
 #include <linux/module.h>
 #include <linux/mmu_context.h>
 #include <linux/sched/mm.h>
+#include <linux/eventfd.h>
+#include <linux/circ_buf.h>
+#include <linux/mm.h>
 
 #include "async_pf.h"
 #include <trace/events/kvm.h>
@@ -42,6 +45,9 @@ void kvm_async_pf_vcpu_init(struct kvm_vcpu *vcpu)
 	spin_lock_init(&vcpu->async_pf.lock);
 	atomic_set(&vcpu->async_pf.queued, 0);
 	vcpu->async_pf.clearing = false;
+	vcpu->async_pf.eventfd = NULL;
+	vcpu->async_pf.ring = NULL;
+	vcpu->async_pf.ring_pinned_page = NULL;
 }
 
 static void async_pf_execute(struct work_struct *work)
@@ -255,6 +261,17 @@ void kvm_clear_async_pf_completion_queue(struct kvm_vcpu *vcpu)
 	spin_lock(&vcpu->async_pf.lock);
 	vcpu->async_pf.clearing = true;
 
+	/* Clean up exitless APF resources */
+	if (vcpu->async_pf.eventfd) {
+		eventfd_ctx_put(vcpu->async_pf.eventfd);
+		vcpu->async_pf.eventfd = NULL;
+	}
+	if (vcpu->async_pf.ring_pinned_page) {
+		unpin_user_pages(&vcpu->async_pf.ring_pinned_page, 1);
+		vcpu->async_pf.ring_pinned_page = NULL;
+		vcpu->async_pf.ring = NULL;
+	}
+
 	/* cancel outstanding work queue item */
 	while (!list_empty(&vcpu->async_pf.queue)) {
 		struct kvm_async_pf *work =
@@ -401,4 +418,89 @@ int kvm_async_pf_wakeup_all(struct kvm_vcpu *vcpu)
 		kvm_arch_async_page_present_queued(vcpu);
 
 	return 0;
+}
+
+
+/*
+ * Exitless APF support - signal eventfd instead of exiting to userspace
+ */
+
+int kvm_apf_set_eventfd(struct kvm_vcpu *vcpu, struct kvm_apf_eventfd *args)
+{
+	struct eventfd_ctx *eventfd = NULL;
+	struct page *page = NULL;
+	struct kvm_apf_ring *ring = NULL;
+	int ret;
+
+	BUILD_BUG_ON(sizeof(struct kvm_apf_ring) > PAGE_SIZE);
+
+	if (args->flags)
+		return -EINVAL;
+
+	if (args->fd >= 0) {
+		if (!args->ring_addr || (args->ring_addr & ~PAGE_MASK))
+			return -EINVAL;
+
+		eventfd = eventfd_ctx_fdget(args->fd);
+		if (IS_ERR(eventfd))
+			return PTR_ERR(eventfd);
+
+		/* Pin the userspace-provided ring buffer page */
+		ret = pin_user_pages_fast(args->ring_addr, 1,
+					  FOLL_WRITE | FOLL_LONGTERM, &page);
+		if (ret < 0) {
+			eventfd_ctx_put(eventfd);
+			return ret;
+		}
+		ring = page_address(page);
+	}
+
+	spin_lock(&vcpu->async_pf.lock);
+
+	/* Swap out old eventfd/ring */
+	if (vcpu->async_pf.eventfd)
+		eventfd_ctx_put(vcpu->async_pf.eventfd);
+	if (vcpu->async_pf.ring_pinned_page)
+		unpin_user_pages(&vcpu->async_pf.ring_pinned_page, 1);
+
+	vcpu->async_pf.eventfd = eventfd;
+	vcpu->async_pf.ring_pinned_page = page;
+	vcpu->async_pf.ring = ring;
+
+	spin_unlock(&vcpu->async_pf.lock);
+
+	return 0;
+}
+
+/*
+ * Signal APF via eventfd + ring buffer instead of exiting.
+ * Returns true if signaled exitlessly, false if should exit normally.
+ */
+bool kvm_apf_signal_exitless(struct kvm_vcpu *vcpu, gpa_t gpa, u64 flags)
+{
+	struct kvm_apf_ring *ring;
+	struct kvm_apf_ring_entry *entry;
+	u32 head, tail;
+
+	if (!vcpu->async_pf.eventfd)
+		return false;
+
+	ring = vcpu->async_pf.ring;
+	head = smp_load_acquire(&ring->head);
+	tail = READ_ONCE(ring->tail);
+
+	if (!CIRC_SPACE(head, tail, KVM_APF_RING_SIZE))
+		return false;
+
+	entry = &ring->entries[head];
+	entry->gpa = gpa;
+	entry->flags = flags;
+
+	smp_store_release(&ring->head, (head + 1) % KVM_APF_RING_SIZE);
+
+	eventfd_signal(vcpu->async_pf.eventfd);
+
+	trace_kvm_apf_exitless_signal(vcpu->vcpu_id, gpa);
+
+	return true;
 }

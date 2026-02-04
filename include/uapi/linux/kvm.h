@@ -1615,6 +1615,12 @@ struct kvm_create_guest_memfd {
 };
 
 #define KVM_PRE_FAULT_MEMORY	_IOWR(KVMIO, 0xd5, struct kvm_pre_fault_memory)
+
+/*
+ * KVM_ASYNC_PF_READY - Signal that an async page fault has been resolved.
+ * The argument is the GPA that was faulted. This wakes the vCPU if it was
+ * halted waiting for the page.
+ */
 #define KVM_ASYNC_PF_READY	_IOW(KVMIO,  0xd6, __u64)
 
 struct kvm_pre_fault_memory {
@@ -1622,6 +1628,42 @@ struct kvm_pre_fault_memory {
 	__u64 size;
 	__u64 flags;
 	__u64 padding[5];
+};
+
+/*
+ * KVM_SET_APF_EVENTFD - Register eventfd for exitless async page fault
+ * notification. When set, userfault APFs signal the eventfd instead of
+ * exiting to userspace. APF details are written to a shared ring buffer
+ * provided by userspace via ring_addr.
+ * fd = -1 to deregister.
+ *
+ * ring_addr must point to a page-aligned, MAP_SHARED anonymous mmap region
+ * of at least PAGE_SIZE bytes, laid out as struct kvm_apf_ring.
+ */
+struct kvm_apf_eventfd {
+	__s32 fd;
+	__u32 flags;
+	__u64 ring_addr;
+};
+
+#define KVM_SET_APF_EVENTFD	_IOW(KVMIO, 0xd7, struct kvm_apf_eventfd)
+
+/*
+ * Shared ring buffer entry for exitless APF notifications.
+ */
+struct kvm_apf_ring_entry {
+	__u64 gpa;
+	__u64 flags;
+};
+
+#define KVM_APF_RING_SIZE	128
+
+struct kvm_apf_ring {
+	__u32 head;	/* Written by kernel */
+	__u32 tail;	/* Written by userspace */
+	__u32 flags;
+	__u32 padding;
+	struct kvm_apf_ring_entry entries[KVM_APF_RING_SIZE];
 };
 
 #endif /* __LINUX_KVM_H */
