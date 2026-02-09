@@ -6069,6 +6069,9 @@ static int kvm_vcpu_ioctl_enable_cap(struct kvm_vcpu *vcpu,
 	case KVM_CAP_ENFORCE_PV_FEATURE_CPUID:
 		vcpu->arch.pv_cpuid.enforce = cap->args[0];
 		return 0;
+	case KVM_CAP_ASYNC_PF_USERFAULT:
+		vcpu->async_pf.userfault_enabled = cap->args[0];
+		return 0;
 	default:
 		return -EINVAL;
 	}
@@ -6231,6 +6234,15 @@ long kvm_arch_vcpu_async_ioctl(struct file *filp, unsigned int ioctl,
 		return -ENOIOCTLCMD;
 	}
 
+	if (ioctl == KVM_SET_APF_EVENTFD) {
+		struct kvm_apf_eventfd args;
+
+		if (copy_from_user(&args, argp, sizeof(args)))
+			return -EFAULT;
+
+		return kvm_apf_set_eventfd(vcpu, &args);
+	}
+
 	return -ENOIOCTLCMD;
 }
 
@@ -6272,6 +6284,16 @@ long kvm_arch_vcpu_ioctl(struct file *filp,
 		default:
 			r = -EINVAL;
 		}
+		break;
+	}
+	case KVM_SET_APF_EVENTFD: {
+		struct kvm_apf_eventfd args;
+
+		r = -EFAULT;
+		if (copy_from_user(&args, argp, sizeof(args)))
+			goto out;
+
+		r = kvm_apf_set_eventfd(vcpu, &args);
 		break;
 	}
 	case KVM_GET_LAPIC: {
@@ -11920,6 +11942,7 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 	kvm_load_guest_fpu(vcpu);
 
 	kvm_vcpu_srcu_read_lock(vcpu);
+
 	if (unlikely(vcpu->arch.mp_state == KVM_MP_STATE_UNINITIALIZED)) {
 		if (!vcpu->wants_to_run) {
 			r = -EINTR;

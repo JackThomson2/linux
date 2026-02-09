@@ -1616,6 +1616,14 @@ struct kvm_create_guest_memfd {
 };
 
 #define KVM_PRE_FAULT_MEMORY	_IOWR(KVMIO, 0xd5, struct kvm_pre_fault_memory)
+
+struct kvm_pre_fault_memory {
+	__u64 gpa;
+	__u64 size;
+	__u64 flags;
+	__u64 padding[5];
+};
+
 /*
  * Userfaultfd async page fault ioctl.
  *
@@ -1649,12 +1657,51 @@ struct kvm_async_pf_req {
 	__u32 flags;
 	__u64 reserved[2];
 };
+/*
+ * KVM_SET_APF_EVENTFD - Register eventfds for exitless async page fault
+ * notification. When set, userfault APFs signal the eventfd instead of
+ * exiting to userspace. APF details are written to a shared page
+ * provided by userspace via page_addr.
+ * fd = -1 to deregister.
+ *
+ * page_addr must point to a page-aligned, MAP_SHARED anonymous mmap region
+ * of PAGE_SIZE bytes, laid out as struct kvm_apf_shared_page.
+ */
+#define KVM_SET_APF_EVENTFD	_IOW(KVMIO, 0xd9, struct kvm_apf_eventfd)
 
-struct kvm_pre_fault_memory {
+struct kvm_apf_eventfd {
+	__s32 fd;
+	__s32 complete_fd;
+	__u64 page_addr;
+	__u32 flags;
+	__u32 padding;
+};
+
+/*
+ * Shared page for exitless APF, containing both notification and completion
+ * ring buffers.
+ *
+ * Notification ring (notify): kernel writes head, userspace writes tail.
+ * Completion ring (complete): userspace writes head, kernel writes tail.
+ */
+struct kvm_apf_ring_entry {
 	__u64 gpa;
-	__u64 size;
 	__u64 flags;
-	__u64 padding[5];
+};
+
+#define KVM_APF_RING_SIZE	32
+
+struct kvm_apf_ring {
+	__u32 head;
+	__u32 tail;
+	__u32 reserved;
+	__u32 padding;
+	struct kvm_apf_ring_entry entries[KVM_APF_RING_SIZE];
+};
+
+struct kvm_apf_shared_page {
+	struct kvm_apf_ring notify;
+	struct kvm_apf_ring complete;
 };
 
 #endif /* __LINUX_KVM_H */
