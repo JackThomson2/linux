@@ -262,6 +262,24 @@ TRACE_EVENT(
 		  __entry->address)
 );
 
+TRACE_EVENT(
+	kvm_apf_exitless_signal,
+	TP_PROTO(int vcpu_id, u64 gpa),
+	TP_ARGS(vcpu_id, gpa),
+
+	TP_STRUCT__entry(
+		__field(int, vcpu_id)
+		__field(u64, gpa)
+		),
+
+	TP_fast_assign(
+		__entry->vcpu_id = vcpu_id;
+		__entry->gpa = gpa;
+		),
+
+	TP_printk("vcpu %d gpa %#llx", __entry->vcpu_id, __entry->gpa)
+);
+
 #endif
 
 TRACE_EVENT(kvm_halt_poll_ns,
