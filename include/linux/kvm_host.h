@@ -260,7 +260,7 @@ struct kvm_async_pf {
 	enum kvm_apf_uf_state uf_state;
 };
 bool kvm_async_pf_userfault_exists(struct kvm_vcpu *vcpu,
-				   gfn_t gfn, bool *pending_accept);
+				   gfn_t gfn);
 int kvm_async_pf_accept(struct kvm_vcpu *vcpu, gpa_t gpa);
 int kvm_async_pf_reject(struct kvm_vcpu *vcpu, gpa_t gpa);
 int kvm_async_pf_complete(struct kvm_vcpu *vcpu, gpa_t gpa);
@@ -270,6 +270,8 @@ bool kvm_setup_async_pf(struct kvm_vcpu *vcpu, gpa_t cr2_or_gpa,
 			unsigned long hva, struct kvm_arch_async_pf *arch,
 			bool userfault);
 int kvm_async_pf_wakeup_all(struct kvm_vcpu *vcpu);
+int kvm_apf_set_eventfd(struct kvm_vcpu *vcpu, struct kvm_apf_eventfd *args);
+bool kvm_apf_signal_exitless(struct kvm_vcpu *vcpu, gpa_t gpa, u64 flags);
 #endif
 
 #ifdef CONFIG_KVM_GENERIC_MMU_NOTIFIER
@@ -387,6 +389,11 @@ struct kvm_vcpu {
 		struct list_head done;
 		spinlock_t lock;
 		bool clearing;
+		/* Exitless APF shared page (notification + completion rings) */
+		struct eventfd_ctx *eventfd;
+		struct eventfd_ctx *complete_eventfd;
+		struct page *pinned_page;
+		wait_queue_entry_t complete_wait;
 	} async_pf;
 #endif
 

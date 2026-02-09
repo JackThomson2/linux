@@ -13,6 +13,11 @@
 #include <linux/module.h>
 #include <linux/mmu_context.h>
 #include <linux/sched/mm.h>
+#include <linux/eventfd.h>
+#include <linux/file.h>
+#include <linux/poll.h>
+#include <linux/circ_buf.h>
+#include <linux/mm.h>
 
 #include "async_pf.h"
 #include <trace/events/kvm.h>
@@ -42,6 +47,9 @@ void kvm_async_pf_vcpu_init(struct kvm_vcpu *vcpu)
 	spin_lock_init(&vcpu->async_pf.lock);
 	atomic_set(&vcpu->async_pf.queued, 0);
 	vcpu->async_pf.clearing = false;
+	vcpu->async_pf.eventfd = NULL;
+	vcpu->async_pf.complete_eventfd = NULL;
+	vcpu->async_pf.pinned_page = NULL;
 }
 
 static void async_pf_execute(struct work_struct *work)
@@ -183,8 +191,7 @@ static void kvm_flush_and_free_async_pf_work(struct kvm_async_pf *work)
 	kmem_cache_free(async_pf_cache, work);
 }
 
-bool kvm_async_pf_userfault_exists(struct kvm_vcpu *vcpu, gfn_t gfn,
-				   bool *pending_accept)
+bool kvm_async_pf_userfault_exists(struct kvm_vcpu *vcpu, gfn_t gfn)
 {
 	struct kvm_async_pf *apf;
 	bool exists;
@@ -192,7 +199,6 @@ bool kvm_async_pf_userfault_exists(struct kvm_vcpu *vcpu, gfn_t gfn,
 	spin_lock(&vcpu->async_pf.lock);
 	apf = async_pf_find_work_item_from_gfn(vcpu, gfn);
 	exists = apf && apf->userfault;
-	*pending_accept = exists && apf->uf_state < KVM_APF_UF_ACCEPTED;
 	spin_unlock(&vcpu->async_pf.lock);
 
 	return exists;
@@ -245,10 +251,46 @@ int kvm_async_pf_reject(struct kvm_vcpu *vcpu, gpa_t gpa)
 	return 0;
 }
 
+static void kvm_apf_teardown_exitless(struct kvm_vcpu *vcpu)
+{
+	struct eventfd_ctx *old_eventfd, *old_complete;
+	struct page *old_page;
+	u64 cnt;
+
+	lockdep_assert_held(&vcpu->async_pf.lock);
+
+	old_eventfd = vcpu->async_pf.eventfd;
+	old_complete = vcpu->async_pf.complete_eventfd;
+	old_page = vcpu->async_pf.pinned_page;
+
+	vcpu->async_pf.eventfd = NULL;
+	vcpu->async_pf.complete_eventfd = NULL;
+	vcpu->async_pf.pinned_page = NULL;
+
+	spin_unlock(&vcpu->async_pf.lock);
+
+	if (old_complete) {
+		eventfd_ctx_remove_wait_queue(old_complete,
+					      &vcpu->async_pf.complete_wait,
+					      &cnt);
+		eventfd_ctx_put(old_complete);
+	}
+	if (old_eventfd)
+		eventfd_ctx_put(old_eventfd);
+	if (old_page)
+		unpin_user_pages(&old_page, 1);
+
+	spin_lock(&vcpu->async_pf.lock);
+}
+
 void kvm_clear_async_pf_completion_queue(struct kvm_vcpu *vcpu)
 {
 	spin_lock(&vcpu->async_pf.lock);
 	vcpu->async_pf.clearing = true;
+
+	/* Clean up exitless APF resources */
+	if (vcpu->async_pf.eventfd || vcpu->async_pf.complete_eventfd)
+		kvm_apf_teardown_exitless(vcpu);
 
 	/* cancel outstanding work queue item */
 	while (!list_empty(&vcpu->async_pf.queue)) {
@@ -396,4 +438,198 @@ int kvm_async_pf_wakeup_all(struct kvm_vcpu *vcpu)
 		kvm_arch_async_page_present_queued(vcpu);
 
 	return 0;
+}
+
+
+/*
+ * Exitless APF support - signal eventfd instead of exiting to userspace
+ */
+static void kvm_apf_drain_complete_ring(struct kvm_vcpu *vcpu)
+{
+	struct kvm_apf_shared_page *shared;
+	struct kvm_apf_ring *ring;
+	u32 head, tail;
+
+	spin_lock(&vcpu->async_pf.lock);
+	if (!vcpu->async_pf.pinned_page) {
+		spin_unlock(&vcpu->async_pf.lock);
+		return;
+	}
+	shared = page_address(vcpu->async_pf.pinned_page);
+	ring = &shared->complete;
+	spin_unlock(&vcpu->async_pf.lock);
+
+	tail = ring->tail & (KVM_APF_RING_SIZE - 1);
+	head = smp_load_acquire(&ring->head) & (KVM_APF_RING_SIZE - 1);
+
+	while (CIRC_CNT(head, tail, KVM_APF_RING_SIZE)) {
+		struct kvm_apf_ring_entry *entry = &ring->entries[tail];
+		gpa_t gpa = entry->gpa;
+
+		tail = (tail + 1) & (KVM_APF_RING_SIZE - 1);
+		smp_store_release(&ring->tail, tail);
+
+		kvm_async_pf_complete(vcpu, gpa);
+
+		head = smp_load_acquire(&ring->head) & (KVM_APF_RING_SIZE - 1);
+	}
+}
+
+static int kvm_apf_complete_wakeup(wait_queue_entry_t *wait, unsigned mode,
+				    int sync, void *key)
+{
+	struct kvm_vcpu *vcpu = container_of(wait, struct kvm_vcpu,
+					     async_pf.complete_wait);
+	__poll_t flags = key_to_poll(key);
+
+	if (flags & EPOLLIN) {
+		u64 cnt;
+
+		eventfd_ctx_do_read(vcpu->async_pf.complete_eventfd, &cnt);
+		kvm_apf_drain_complete_ring(vcpu);
+	}
+
+	return 0;
+}
+
+struct kvm_apf_complete_pt {
+	struct kvm_vcpu *vcpu;
+	poll_table pt;
+	int ret;
+};
+
+static void kvm_apf_complete_register(struct file *file,
+				       wait_queue_head_t *wqh,
+				       poll_table *pt)
+{
+	struct kvm_apf_complete_pt *p =
+		container_of(pt, struct kvm_apf_complete_pt, pt);
+	struct kvm_vcpu *vcpu = p->vcpu;
+
+	init_waitqueue_func_entry(&vcpu->async_pf.complete_wait,
+				  kvm_apf_complete_wakeup);
+	p->ret = add_wait_queue_priority_exclusive(
+		wqh, &vcpu->async_pf.complete_wait);
+}
+
+int kvm_apf_set_eventfd(struct kvm_vcpu *vcpu, struct kvm_apf_eventfd *args)
+{
+	struct eventfd_ctx *eventfd = NULL, *complete_eventfd = NULL;
+	struct page *page = NULL;
+	struct kvm_apf_complete_pt apf_pt;
+	struct fd complete_f = {};
+	int ret;
+
+	BUILD_BUG_ON(sizeof(struct kvm_apf_shared_page) > PAGE_SIZE);
+
+	if (args->flags || args->padding)
+		return -EINVAL;
+
+	if (args->fd >= 0) {
+		if (!args->page_addr || (args->page_addr & ~PAGE_MASK))
+			return -EINVAL;
+
+		eventfd = eventfd_ctx_fdget(args->fd);
+		if (IS_ERR(eventfd))
+			return PTR_ERR(eventfd);
+
+		ret = pin_user_pages_fast(args->page_addr, 1,
+					  FOLL_WRITE | FOLL_LONGTERM, &page);
+		if (ret < 0)
+			goto err_eventfd;
+
+		complete_f = fdget(args->complete_fd);
+		if (!fd_file(complete_f)) {
+			ret = -EBADF;
+			goto err_page;
+		}
+		complete_eventfd = eventfd_ctx_fileget(fd_file(complete_f));
+		if (IS_ERR(complete_eventfd)) {
+			ret = PTR_ERR(complete_eventfd);
+			complete_eventfd = NULL;
+			goto err_complete_fd;
+		}
+
+		apf_pt.vcpu = vcpu;
+		init_poll_funcptr(&apf_pt.pt, kvm_apf_complete_register);
+		vfs_poll(fd_file(complete_f), &apf_pt.pt);
+		ret = apf_pt.ret;
+		if (ret)
+			goto err_complete_ctx;
+	}
+
+	spin_lock(&vcpu->async_pf.lock);
+
+	/* Tear down old exitless resources (drops and re-takes lock) */
+	if (vcpu->async_pf.eventfd || vcpu->async_pf.complete_eventfd)
+		kvm_apf_teardown_exitless(vcpu);
+
+	vcpu->async_pf.eventfd = eventfd;
+	vcpu->async_pf.complete_eventfd = complete_eventfd;
+	vcpu->async_pf.pinned_page = page;
+
+	spin_unlock(&vcpu->async_pf.lock);
+
+	if (fd_file(complete_f))
+		fdput(complete_f);
+	return 0;
+
+err_complete_ctx:
+	eventfd_ctx_put(complete_eventfd);
+err_complete_fd:
+	fdput(complete_f);
+err_page:
+	unpin_user_pages(&page, 1);
+err_eventfd:
+	eventfd_ctx_put(eventfd);
+	return ret;
+}
+
+/*
+ * Signal APF via eventfd + ring buffer instead of exiting.
+ * Returns true if signaled exitlessly, false if should exit normally.
+ */
+bool kvm_apf_signal_exitless(struct kvm_vcpu *vcpu, gpa_t gpa, u64 flags)
+{
+	struct kvm_apf_shared_page *shared;
+	struct kvm_apf_ring *ring;
+	struct kvm_apf_ring_entry *entry;
+	struct eventfd_ctx *eventfd;
+	struct kvm_async_pf *apf;
+	u32 head, tail;
+
+	spin_lock(&vcpu->async_pf.lock);
+	eventfd = vcpu->async_pf.eventfd;
+	if (!eventfd || !vcpu->async_pf.pinned_page) {
+		spin_unlock(&vcpu->async_pf.lock);
+		return false;
+	}
+	shared = page_address(vcpu->async_pf.pinned_page);
+	ring = &shared->notify;
+
+	head = ring->head & (KVM_APF_RING_SIZE - 1);
+	tail = smp_load_acquire(&ring->tail) & (KVM_APF_RING_SIZE - 1);
+
+	if (!CIRC_SPACE(head, tail, KVM_APF_RING_SIZE)) {
+		spin_unlock(&vcpu->async_pf.lock);
+		return false;
+	}
+
+	entry = &ring->entries[head];
+	entry->gpa = gpa;
+	entry->flags = flags;
+
+	smp_store_release(&ring->head, (head + 1) % KVM_APF_RING_SIZE);
+
+	apf = async_pf_find_work_item_from_gfn(vcpu, gpa_to_gfn(gpa));
+	if (apf && apf->userfault && apf->uf_state == KVM_APF_UF_PENDING)
+		apf->uf_state = KVM_APF_UF_ACCEPTED;
+
+	spin_unlock(&vcpu->async_pf.lock);
+
+	eventfd_signal(eventfd);
+
+	trace_kvm_apf_exitless_signal(vcpu->vcpu_id, gpa);
+
+	return true;
 }
