@@ -4428,11 +4428,11 @@ static long kvm_vcpu_ioctl(struct file *filp,
 	struct kvm_fpu *fpu = NULL;
 	struct kvm_sregs *kvm_sregs = NULL;
 
-	if (vcpu->kvm->mm != current->mm || vcpu->kvm->vm_dead)
-		return -EIO;
-
 	if (unlikely(_IOC_TYPE(ioctl) != KVMIO))
 		return -EINVAL;
+
+	if (vcpu->kvm->mm != current->mm || vcpu->kvm->vm_dead)
+		return -EIO;
 
 	/*
 	 * Wait for the vCPU to be online before handling the ioctl(), as KVM
