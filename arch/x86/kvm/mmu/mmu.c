@@ -4609,6 +4609,18 @@ static int __kvm_mmu_faultin_pfn(struct kvm_vcpu *vcpu,
 			}
 		}
 
+		/*
+		 * Try exitless notification via eventfd. If successful,
+		 * just retry - the guest will handle the APF and can
+		 * continue running other tasks.
+		 */
+		if (report_async &&
+		    kvm_apf_signal_exitless(vcpu, fault->gfn << PAGE_SHIFT,
+					    KVM_MEMORY_EXIT_FLAG_USERFAULT |
+					    KVM_MEMORY_EXIT_FLAG_APF)) {
+			return RET_PF_RETRY;
+		}
+
 		kvm_mmu_prepare_userfault_exit(vcpu, fault);
 
 		if (report_async) {
