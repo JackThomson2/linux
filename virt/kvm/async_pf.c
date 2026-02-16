@@ -623,7 +623,6 @@ bool kvm_apf_signal_exitless(struct kvm_vcpu *vcpu, gpa_t gpa, u64 flags)
 		spin_unlock(&vcpu->async_pf.lock);
 		return false;
 	}
-	eventfd_ctx_get(eventfd);
 	shared = page_address(vcpu->async_pf.pinned_page);
 	ring = &shared->notify;
 
@@ -631,7 +630,6 @@ bool kvm_apf_signal_exitless(struct kvm_vcpu *vcpu, gpa_t gpa, u64 flags)
 	tail = smp_load_acquire(&ring->tail) & (KVM_APF_RING_SIZE - 1);
 
 	if (!CIRC_SPACE(head, tail, KVM_APF_RING_SIZE)) {
-		eventfd_ctx_put(eventfd);
 		spin_unlock(&vcpu->async_pf.lock);
 		return false;
 	}
@@ -649,7 +647,6 @@ bool kvm_apf_signal_exitless(struct kvm_vcpu *vcpu, gpa_t gpa, u64 flags)
 	spin_unlock(&vcpu->async_pf.lock);
 
 	eventfd_signal(eventfd);
-	eventfd_ctx_put(eventfd);
 
 	trace_kvm_apf_exitless_signal(vcpu->vcpu_id, gpa);
 

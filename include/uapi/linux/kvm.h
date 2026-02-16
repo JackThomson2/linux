@@ -968,6 +968,7 @@ struct kvm_enable_cap {
 #define KVM_CAP_GUEST_MEMFD_MMAP 243
 #define KVM_CAP_GUEST_MEMFD_NO_DIRECT_MAP 244
 #define KVM_CAP_USERFAULT 245
+#define KVM_CAP_ASYNC_PF_USERFAULT 246
 
 struct kvm_irq_routing_irqchip {
 	__u32 irqchip;
