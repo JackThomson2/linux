@@ -40,7 +40,8 @@ struct kvm_userspace_memory_region2 {
 	__u64 guest_memfd_offset;
 	__u32 guest_memfd;
 	__u32 pad1;
-	__u64 pad2[14];
+	__u64 userfault_bitmap;
+	__u64 pad2[13];
 };
 
 /*
@@ -51,6 +52,7 @@ struct kvm_userspace_memory_region2 {
 #define KVM_MEM_LOG_DIRTY_PAGES	(1UL << 0)
 #define KVM_MEM_READONLY	(1UL << 1)
 #define KVM_MEM_GUEST_MEMFD	(1UL << 2)
+#define KVM_MEM_USERFAULT	(1UL << 3)
 
 /* for KVM_IRQ_LINE */
 struct kvm_irq_level {
@@ -444,6 +446,8 @@ struct kvm_run {
 		/* KVM_EXIT_MEMORY_FAULT */
 		struct {
 #define KVM_MEMORY_EXIT_FLAG_PRIVATE	(1ULL << 3)
+#define KVM_MEMORY_EXIT_FLAG_USERFAULT	(1ULL << 4)
+#define KVM_MEMORY_EXIT_FLAG_APF	(1ULL << 5)
 			__u64 flags;
 			__u64 gpa;
 			__u64 size;
@@ -963,6 +967,8 @@ struct kvm_enable_cap {
 #define KVM_CAP_RISCV_MP_STATE_RESET 242
 #define KVM_CAP_ARM_CACHEABLE_PFNMAP_SUPPORTED 243
 #define KVM_CAP_GUEST_MEMFD_FLAGS 244
+#define KVM_CAP_USERFAULT 245
+#define KVM_CAP_ASYNC_PF_USERFAULT 246
 
 struct kvm_irq_routing_irqchip {
 	__u32 irqchip;
@@ -1601,6 +1607,8 @@ struct kvm_memory_attributes {
 #define KVM_CREATE_GUEST_MEMFD	_IOWR(KVMIO,  0xd4, struct kvm_create_guest_memfd)
 #define GUEST_MEMFD_FLAG_MMAP		(1ULL << 0)
 #define GUEST_MEMFD_FLAG_INIT_SHARED	(1ULL << 1)
+#define GUEST_MEMFD_FLAG_NO_DIRECT_MAP	(1ULL << 2)
+#define GUEST_MEMFD_FLAG_WRITE		(1ULL << 3)
 
 struct kvm_create_guest_memfd {
 	__u64 size;
@@ -1615,6 +1623,86 @@ struct kvm_pre_fault_memory {
 	__u64 size;
 	__u64 flags;
 	__u64 padding[5];
+};
+
+/*
+ * Userfaultfd async page fault ioctl.
+ *
+ * When a vCPU exits with KVM_EXIT_MEMORY_FAULT and KVM_MEMORY_EXIT_FLAG_APF
+ * set, an async page fault has been created. Userspace may respond before
+ * re-entering the vCPU:
+ *
+ * KVM_APF_OP_ACCEPT - Userspace will resolve the page asynchronously.
+ *   The vCPU re-enters in a halted state while the page is being resolved.
+ *   When the page is ready, userspace calls KVM_APF_OP_READY to wake
+ *   the vCPU.
+ *
+ * KVM_APF_OP_READY - Signal that an async page fault previously accepted
+ *   via KVM_APF_OP_ACCEPT has been resolved. The argument is the GPA
+ *   that was faulted. This wakes the vCPU if it was halted waiting for
+ *   the page.
+ *
+ * If userspace resolves the page synchronously (e.g. via UFFDIO_COPY) and
+ * re-enters KVM_RUN without calling ACCEPT, KVM will auto-complete the
+ * pending APF on re-entry. The guest retries the faulting instruction and
+ * finds the page present.
+ */
+#define KVM_ASYNC_PF		_IOW(KVMIO, 0xd6, struct kvm_async_pf_req)
+
+#define KVM_APF_OP_READY		0
+#define KVM_APF_OP_ACCEPT		1
+
+struct kvm_async_pf_req {
+	__u64 gpa;
+	__u32 op;
+	__u32 flags;
+	__u64 reserved[2];
+};
+/*
+ * KVM_SET_APF_EVENTFD - Register eventfds for exitless async page fault
+ * notification. When set, userfault APFs signal the eventfd instead of
+ * exiting to userspace. APF details are written to a shared page
+ * provided by userspace via page_addr.
+ * fd = -1 to deregister.
+ *
+ * page_addr must point to a page-aligned, MAP_SHARED anonymous mmap region
+ * of PAGE_SIZE bytes, laid out as struct kvm_apf_shared_page.
+ */
+#define KVM_SET_APF_EVENTFD	_IOW(KVMIO, 0xd9, struct kvm_apf_eventfd)
+
+struct kvm_apf_eventfd {
+	__s32 fd;
+	__s32 complete_fd;
+	__u64 page_addr;
+	__u32 flags;
+	__u32 padding;
+};
+
+/*
+ * Shared page for exitless APF, containing both notification and completion
+ * ring buffers.
+ *
+ * Notification ring (notify): kernel writes head, userspace writes tail.
+ * Completion ring (complete): userspace writes head, kernel writes tail.
+ */
+struct kvm_apf_ring_entry {
+	__u64 gpa;
+	__u64 flags;
+};
+
+#define KVM_APF_RING_SIZE	32
+
+struct kvm_apf_ring {
+	__u32 head;
+	__u32 tail;
+	__u32 reserved;
+	__u32 padding;
+	struct kvm_apf_ring_entry entries[KVM_APF_RING_SIZE];
+};
+
+struct kvm_apf_shared_page {
+	struct kvm_apf_ring notify;
+	struct kvm_apf_ring complete;
 };
 
 #endif /* __LINUX_KVM_H */

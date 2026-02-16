@@ -6543,6 +6543,151 @@ the capability to be present.
 `flags` must currently be zero.
 
 
+4.144 KVM_ASYNC_PF
+------------------
+
+:Capability: KVM_CAP_ASYNC_PF_USERFAULT
+:Architectures: x86
+:Type: vcpu ioctl
+:Parameters: struct kvm_async_pf_req (in)
+:Returns: 0 on success, < 0 on error
+
+Errors:
+
+  ========== ===============================================================
+  EINVAL     Invalid ``op``, non-zero ``flags`` or ``reserved`` fields,
+             or ``gpa`` is not page-aligned.
+  ENOENT     No async page fault exists for the specified GPA.
+  EALREADY   The async page fault has already been completed
+             (KVM_APF_OP_READY only).
+  EBUSY      The vCPU is being torn down (KVM_APF_OP_READY only).
+  EFAULT     The parameter address was invalid.
+  ========== ===============================================================
+
+::
+
+  struct kvm_async_pf_req {
+	__u64 gpa;
+	__u32 op;
+	__u32 flags;
+	__u64 reserved[2];
+  };
+
+  #define KVM_APF_OP_READY          0
+  #define KVM_APF_OP_ACCEPT         1
+  #define KVM_APF_OP_SYNC_COMPLETE  2
+
+This ioctl manages userfaultfd-based async page faults. When a vCPU exits
+with ``KVM_EXIT_MEMORY_FAULT`` and ``KVM_MEMORY_EXIT_FLAG_APF`` set in
+``memory_fault.flags``, an async page fault has been created for the
+faulting GPA. Userspace must respond with one of the following operations
+before re-entering the vCPU:
+
+``KVM_APF_OP_ACCEPT``
+  Userspace will resolve the page asynchronously. The vCPU re-enters in a
+  halted state while the page is being resolved. When the page is ready,
+  userspace signals completion via ``KVM_APF_OP_READY``.
+
+``KVM_APF_OP_SYNC_COMPLETE``
+  Userspace has already resolved the page fault synchronously (e.g. via
+  ``UFFDIO_COPY``). KVM completes the async page fault immediately,
+  allowing the guest to retry the faulting instruction. The page must be
+  present when this operation is called.
+
+``KVM_APF_OP_READY``
+  Signals that a page fault previously accepted via ``KVM_APF_OP_ACCEPT``
+  has been resolved. This wakes the vCPU if it was halted waiting for the
+  page. This operation may be called from a thread other than the vCPU
+  thread (it does not require ``vcpu->mutex``).
+
+``flags`` and ``reserved`` must be zero.
+
+
+4.145 KVM_SET_APF_EVENTFD
+--------------------------
+
+:Capability: KVM_CAP_ASYNC_PF_USERFAULT
+:Architectures: x86
+:Type: vcpu ioctl
+:Parameters: struct kvm_apf_eventfd (in)
+:Returns: 0 on success, < 0 on error
+
+Errors:
+
+  ========== ===============================================================
+  EINVAL     Non-zero ``flags`` or ``padding``, ``page_addr`` is not
+             page-aligned or is zero, or ``fd`` equals ``complete_fd``.
+  EBADF      Invalid file descriptor.
+  EFAULT     The parameter address was invalid.
+  ========== ===============================================================
+
+::
+
+  struct kvm_apf_eventfd {
+	__s32 fd;
+	__s32 complete_fd;
+	__u64 page_addr;
+	__u32 flags;
+	__u32 padding;
+  };
+
+Registers eventfds for exitless async page fault notification. When
+registered, userfault async page faults signal ``fd`` and write fault
+details to a shared ring buffer instead of exiting to userspace via
+``KVM_EXIT_MEMORY_FAULT``. This avoids the KVM_RUN exit/re-entry overhead
+for each async page fault.
+
+``page_addr`` must point to a page-aligned userspace mapping of at least
+``PAGE_SIZE`` bytes, laid out as ``struct kvm_apf_shared_page``::
+
+  struct kvm_apf_ring_entry {
+	__u64 gpa;
+	__u64 flags;
+  };
+
+  #define KVM_APF_RING_SIZE  32
+
+  struct kvm_apf_ring {
+	__u32 head;
+	__u32 tail;
+	__u32 reserved;
+	__u32 padding;
+	struct kvm_apf_ring_entry entries[KVM_APF_RING_SIZE];
+  };
+
+  struct kvm_apf_shared_page {
+	struct kvm_apf_ring notify;
+	struct kvm_apf_ring complete;
+  };
+
+The shared page contains two ring buffers:
+
+**Notification ring** (``notify``): KVM writes ``head``, userspace writes
+``tail``. When a userfault async page fault occurs, KVM writes the faulting
+GPA and flags to the next entry and advances ``head``. KVM then signals
+``fd``. If the ring is full, KVM falls back to a normal
+``KVM_EXIT_MEMORY_FAULT`` exit.
+
+**Completion ring** (``complete``): Userspace writes ``head``, KVM writes
+``tail``. When userspace has resolved a page fault, it writes the GPA to
+the next entry, advances ``head``, and signals ``complete_fd``. KVM drains
+the ring and completes the corresponding async page faults.
+
+Both rings use ``smp_store_release`` / ``smp_load_acquire`` for the
+producer/consumer indices.
+
+Set ``fd`` to -1 to deregister. ``complete_fd`` and ``page_addr`` are
+ignored when deregistering.
+
+When exitless notification is registered, all userfault async page faults
+are implicitly accepted (equivalent to ``KVM_APF_OP_ACCEPT``).
+``KVM_APF_OP_SYNC_COMPLETE`` is not available in exitless mode. Userspace
+must resolve pages asynchronously and signal completion via the completion
+ring.
+
+``flags`` and ``padding`` must be zero.
+
+
 .. _kvm_run:
 
 5. The kvm_run structure
@@ -9264,6 +9409,22 @@ vCPU was executing nested guest code when it exited.
 KVM exits with the register state of either the L1 or L2 guest
 depending on which executed at the time of an exit. Userspace must
 take care to differentiate between these cases.
+
+8.46 KVM_CAP_ASYNC_PF_USERFAULT
+---------------------------------
+
+:Architectures: x86
+
+The presence of this capability indicates that the kernel supports
+userfaultfd-based async page faults via the ``KVM_ASYNC_PF`` vcpu ioctl
+and exitless notification via the ``KVM_SET_APF_EVENTFD`` vcpu ioctl.
+
+When a vCPU encounters a userfault page, KVM can create an async page
+fault and exit to userspace with ``KVM_EXIT_MEMORY_FAULT`` with
+``KVM_MEMORY_EXIT_FLAG_APF`` set. Userspace then accepts or synchronously
+completes the fault before re-entering the vCPU. See the documentation
+for ``KVM_ASYNC_PF`` (section 4.144) and ``KVM_SET_APF_EVENTFD``
+(section 4.145) for details.
 
 9. Known KVM API problems
 =========================

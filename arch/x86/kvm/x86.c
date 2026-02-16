@@ -4896,6 +4896,7 @@ int kvm_vm_ioctl_check_extension(struct kvm *kvm, long ext)
 	case KVM_CAP_MEMORY_FAULT_INFO:
 	case KVM_CAP_X86_GUEST_MODE:
 	case KVM_CAP_ONE_REG:
+	case KVM_CAP_ASYNC_PF_USERFAULT:
 		r = 1;
 		break;
 	case KVM_CAP_PRE_FAULT_MEMORY:
