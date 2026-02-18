@@ -65,6 +65,8 @@ void __srcu_read_unlock(struct srcu_struct *ssp, int idx) __releases(ssp);
 
 void call_srcu(struct srcu_struct *ssp, struct rcu_head *head,
 		void (*func)(struct rcu_head *head));
+void call_srcu_expedited(struct srcu_struct *ssp, struct rcu_head *rhp,
+			 rcu_callback_t func);
 void cleanup_srcu_struct(struct srcu_struct *ssp);
 void synchronize_srcu(struct srcu_struct *ssp);
 

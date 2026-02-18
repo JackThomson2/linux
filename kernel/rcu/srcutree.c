@@ -1557,6 +1557,13 @@ unsigned long get_state_synchronize_srcu(struct srcu_struct *ssp)
 }
 EXPORT_SYMBOL_GPL(get_state_synchronize_srcu);
 
+void call_srcu_expedited(struct srcu_struct *ssp, struct rcu_head *rhp,
+			 rcu_callback_t func)
+{
+	__call_srcu(ssp, rhp, func, rcu_gp_is_normal());
+}
+EXPORT_SYMBOL_GPL(call_srcu_expedited);
+
 /**
  * start_poll_synchronize_srcu - Provide cookie and start grace period
  * @ssp: srcu_struct to provide cookie for.
