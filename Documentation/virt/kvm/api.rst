@@ -6504,7 +6504,9 @@ Errors:
 
   ========== ===============================================================
   EINVAL     Invalid ``op``, non-zero ``flags`` or ``reserved`` fields,
-             or ``gpa`` is not page-aligned.
+             ``gpa`` is not page-aligned, or the async page fault is not
+             in the correct state for the requested operation (e.g.
+             ``KVM_APF_OP_SYNC_COMPLETE`` on an already-accepted APF).
   ENOENT     No async page fault exists for the specified GPA.
   EALREADY   The async page fault has already been completed
              (KVM_APF_OP_READY only).
