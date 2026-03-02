@@ -2442,6 +2442,7 @@ struct folio *folio_alloc_mpol_noprof(gfp_t gfp, unsigned int order,
 	set_page_refcounted(page);
 	return page_rmappable_folio(page);
 }
+EXPORT_SYMBOL_FOR_MODULES(folio_alloc_mpol_noprof, "kvm");
 
 /**
  * vma_alloc_folio - Allocate a folio for a VMA.
