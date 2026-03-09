@@ -208,6 +208,8 @@ struct srcu_struct {
 #define DEFINE_STATIC_SRCU(name)	__DEFINE_SRCU(name, static)
 
 int __srcu_read_lock(struct srcu_struct *ssp) __acquires(ssp);
+void call_srcu_expedited(struct srcu_struct *ssp, struct rcu_head *head,
+			 rcu_callback_t func);
 void synchronize_srcu_expedited(struct srcu_struct *ssp);
 void srcu_barrier(struct srcu_struct *ssp);
 void srcu_torture_stats_print(struct srcu_struct *ssp, char *tt, char *tf);
