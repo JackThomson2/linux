@@ -55,6 +55,11 @@ int init_srcu_struct(struct srcu_struct *ssp);
 						// instead of smp_mb().
 void __srcu_read_unlock(struct srcu_struct *ssp, int idx) __releases(ssp);
 
+void call_srcu(struct srcu_struct *ssp, struct rcu_head *head,
+	       rcu_callback_t func);
+void cleanup_srcu_struct(struct srcu_struct *ssp);
+void synchronize_srcu(struct srcu_struct *ssp);
+
 #ifdef CONFIG_TINY_SRCU
 #include <linux/srcutiny.h>
 #elif defined(CONFIG_TREE_SRCU)
@@ -62,11 +67,6 @@ void __srcu_read_unlock(struct srcu_struct *ssp, int idx) __releases(ssp);
 #else
 #error "Unknown SRCU implementation specified to kernel configuration"
 #endif
-
-void call_srcu(struct srcu_struct *ssp, struct rcu_head *head,
-		void (*func)(struct rcu_head *head));
-void cleanup_srcu_struct(struct srcu_struct *ssp);
-void synchronize_srcu(struct srcu_struct *ssp);
 
 #define SRCU_GET_STATE_COMPLETED 0x1
 

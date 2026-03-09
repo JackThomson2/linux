@@ -52,8 +52,6 @@ void srcu_drive_gp(struct work_struct *wp);
 struct srcu_usage { };
 #define __SRCU_USAGE_INIT(name) { }
 
-void synchronize_srcu(struct srcu_struct *ssp);
-
 /*
  * Counts the new reader in the appropriate per-CPU element of the
  * srcu_struct.  Can be invoked from irq/bh handlers, but the matching
