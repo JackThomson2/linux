@@ -343,14 +343,17 @@ void kvm_check_async_pf_completion(struct kvm_vcpu *vcpu)
 {
 	struct kvm_async_pf *work;
 
-	spin_lock(&vcpu->async_pf.lock);
-	while (!list_empty(&vcpu->async_pf.done) &&
+	while (!list_empty_careful(&vcpu->async_pf.done) &&
 	       kvm_arch_can_dequeue_async_page_present(vcpu)) {
+		spin_lock(&vcpu->async_pf.lock);
+		if (list_empty(&vcpu->async_pf.done)) {
+			spin_unlock(&vcpu->async_pf.lock);
+			break;
+		}
 		work = list_first_entry(&vcpu->async_pf.done, typeof(*work),
 					link);
 		list_del(&work->link);
-		if (!work->wakeup_all)
-			list_del(&work->queue);
+		list_del(&work->queue);
 		atomic_dec(&vcpu->async_pf.queued);
 		spin_unlock(&vcpu->async_pf.lock);
 
@@ -359,10 +362,7 @@ void kvm_check_async_pf_completion(struct kvm_vcpu *vcpu)
 			kvm_arch_async_page_present(vcpu, work);
 
 		kvm_flush_and_free_async_pf_work(work);
-
-		spin_lock(&vcpu->async_pf.lock);
 	}
-	spin_unlock(&vcpu->async_pf.lock);
 }
 
 /*
