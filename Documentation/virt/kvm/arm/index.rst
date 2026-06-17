@@ -7,6 +7,7 @@ ARM
 .. toctree::
    :maxdepth: 2
 
+   apf
    fw-pseudo-registers
    hyp-abi
    hypercalls

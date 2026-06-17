@@ -140,6 +140,10 @@ The pseudo-firmware bitmap register are as follows:
       This represents the ARM_SMCCC_VENDOR_HYP_KVM_DISCOVER_IMPL_CPUS_FUNC_ID
       function-id. This is reset to 0.
 
+    Bit-2: KVM_REG_ARM_VENDOR_HYP_BIT_ASYNC_PF
+      This represents the ARM_SMCCC_VENDOR_HYP_KVM_ASYNC_PF_FUNC_ID
+      function-id. This is reset to 1.
+
 Errors:
 
     =======  =============================================================
