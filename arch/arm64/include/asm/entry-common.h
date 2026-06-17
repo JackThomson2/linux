@@ -10,8 +10,14 @@
 #include <asm/fpsimd.h>
 #include <asm/mte.h>
 #include <asm/stacktrace.h>
+#ifdef CONFIG_KVM_GUEST
+void kvm_async_pf_task_wait(void);
+#else
+static inline void kvm_async_pf_task_wait(void) { }
+#endif
 
-#define ARCH_EXIT_TO_USER_MODE_WORK (_TIF_MTE_ASYNC_FAULT | _TIF_FOREIGN_FPSTATE)
+#define ARCH_EXIT_TO_USER_MODE_WORK \
+	(_TIF_MTE_ASYNC_FAULT | _TIF_FOREIGN_FPSTATE | _TIF_ASYNC_PF)
 
 static __always_inline void arch_exit_to_user_mode_work(struct pt_regs *regs,
 							unsigned long ti_work)
@@ -23,6 +29,9 @@ static __always_inline void arch_exit_to_user_mode_work(struct pt_regs *regs,
 
 	if (ti_work & _TIF_FOREIGN_FPSTATE)
 		fpsimd_restore_current_state();
+
+	if (ti_work & _TIF_ASYNC_PF)
+		kvm_async_pf_task_wait();
 }
 
 #define arch_exit_to_user_mode_work arch_exit_to_user_mode_work

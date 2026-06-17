@@ -171,6 +171,7 @@ struct thread_struct {
 	unsigned long		fault_address;	/* fault info */
 	unsigned long		fault_code;	/* ESR_EL1 value */
 	struct debug_info	debug;		/* debugging */
+	u32			async_pf_token;
 
 	/*
 	 * Set [cleared] by kernel_neon_begin() [kernel_neon_end()] to the

@@ -1577,6 +1577,17 @@ config PARAVIRT_TIME_ACCOUNTING
 
 	  If in doubt, say N here.
 
+config KVM_GUEST
+	bool "KVM Guest Support"
+	depends on PARAVIRT
+	default y
+	help
+	  This option enables paravirtualized KVM guest optimizations, including
+	  KVM-specific SMCCC services such as asynchronous page fault delivery.
+	  The code is inactive when the kernel is not running as a KVM guest.
+
+	  In case of doubt, say Y.
+
 config ARCH_SUPPORTS_KEXEC
 	def_bool PM_SLEEP_SMP
 
