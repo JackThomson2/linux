@@ -33,7 +33,7 @@
 #include <asm/kvmclock.h>
 #endif
 
-#ifdef CONFIG_KVM_GUEST
+#if defined(CONFIG_KVM_GUEST) && defined(CONFIG_X86)
 #define SUPPORT_KVMCLOCK
 #endif
 
