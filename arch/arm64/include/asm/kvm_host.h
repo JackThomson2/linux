@@ -55,6 +55,8 @@
 #define KVM_REQ_GUEST_HYP_IRQ_PENDING	KVM_ARCH_REQ(9)
 #define KVM_REQ_MAP_L1_VNCR_EL2		KVM_ARCH_REQ(10)
 #define KVM_REQ_VGIC_PROCESS_UPDATE	KVM_ARCH_REQ(11)
+#define KVM_REQ_ASYNC_PF		KVM_ARCH_REQ(12)
+#define KVM_REQ_ASYNC_PF_HALT		KVM_ARCH_REQ(13)
 
 #define KVM_DIRTY_LOG_MANUAL_CAPS   (KVM_DIRTY_LOG_MANUAL_PROTECT_ENABLE | \
 				     KVM_DIRTY_LOG_INITIALLY_SET)
@@ -282,6 +284,25 @@ static inline u16 kvm_mpidr_index(struct kvm_mpidr_data *data, u64 mpidr)
 
 	return index;
 }
+
+#define ASYNC_PF_PER_VCPU	64
+
+struct kvm_arch_async_pf {
+	u32 token;
+	gfn_t gfn;
+};
+
+struct kvm_arch_async_pf_control {
+	struct gfn_to_hva_cache cache;
+	u64 control_block;
+	u32 irq;
+	bool irq_owner;
+	u32 id;
+	gfn_t gfns[ASYNC_PF_PER_VCPU];
+	bool notpresent_pending;
+	bool pageready_pending;
+	bool halted;
+};
 
 struct kvm_sysreg_masks;
 
@@ -954,6 +975,8 @@ struct kvm_vcpu_arch {
 		gpa_t base;
 	} steal;
 
+	struct kvm_arch_async_pf_control *apf;
+
 	/* Per-vcpu CCSIDR override or NULL */
 	u32 *ccsidr;
 
@@ -1356,6 +1379,27 @@ static inline bool kvm_arch_pmi_in_guest(struct kvm_vcpu *vcpu)
 }
 
 long kvm_hypercall_pv_features(struct kvm_vcpu *vcpu);
+int kvm_arch_async_pf_create_vcpu(struct kvm_vcpu *vcpu);
+void kvm_arch_async_pf_destroy_vcpu(struct kvm_vcpu *vcpu);
+void kvm_arch_async_pf_reset_vcpu(struct kvm_vcpu *vcpu);
+void kvm_arch_async_pf_hypercall(struct kvm_vcpu *vcpu, u64 *val);
+int kvm_arch_async_pf_set_attr(struct kvm_vcpu *vcpu,
+			       struct kvm_device_attr *attr);
+int kvm_arch_async_pf_get_attr(struct kvm_vcpu *vcpu,
+			       struct kvm_device_attr *attr);
+int kvm_arch_async_pf_has_attr(struct kvm_vcpu *vcpu,
+			       struct kvm_device_attr *attr);
+bool kvm_arch_async_page_not_present(struct kvm_vcpu *vcpu,
+				     struct kvm_async_pf *work);
+void kvm_arch_async_page_present_queued(struct kvm_vcpu *vcpu);
+void kvm_arch_async_pf_halt(struct kvm_vcpu *vcpu);
+void kvm_arch_async_pf_unhalt(struct kvm_vcpu *vcpu);
+bool kvm_arch_async_pf_is_halted(struct kvm_vcpu *vcpu);
+bool kvm_arch_can_dequeue_async_page_present(struct kvm_vcpu *vcpu);
+void kvm_arch_async_page_ready(struct kvm_vcpu *vcpu,
+			       struct kvm_async_pf *work);
+void kvm_arch_async_page_present(struct kvm_vcpu *vcpu,
+				 struct kvm_async_pf *work);
 gpa_t kvm_init_stolen_time(struct kvm_vcpu *vcpu);
 void kvm_update_stolen_time(struct kvm_vcpu *vcpu);
 

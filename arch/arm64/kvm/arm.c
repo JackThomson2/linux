@@ -392,6 +392,7 @@ int kvm_vm_ioctl_check_extension(struct kvm *kvm, long ext)
 	case KVM_CAP_COUNTER_OFFSET:
 	case KVM_CAP_ARM_WRITABLE_IMP_ID_REGS:
 	case KVM_CAP_ARM_SEA_TO_USER:
+	case KVM_CAP_ASYNC_PF:
 		r = 1;
 		break;
 	case KVM_CAP_SET_GUEST_DEBUG2:
@@ -544,6 +545,9 @@ int kvm_arch_vcpu_create(struct kvm_vcpu *vcpu)
 	kvm_pmu_vcpu_init(vcpu);
 
 	kvm_arm_pvtime_vcpu_init(&vcpu->arch);
+	err = kvm_arch_async_pf_create_vcpu(vcpu);
+	if (err)
+		return err;
 
 	vcpu->arch.hw_mmu = &vcpu->kvm->arch.mmu;
 
@@ -555,15 +559,19 @@ int kvm_arch_vcpu_create(struct kvm_vcpu *vcpu)
 	kvm_destroy_mpidr_data(vcpu->kvm);
 
 	err = kvm_vgic_vcpu_init(vcpu);
-	if (err) {
-		kvm_vgic_vcpu_destroy(vcpu);
-		return err;
-	}
+	if (err)
+		goto err_destroy_apf;
 
 	err = kvm_share_hyp(vcpu, vcpu + 1);
 	if (err)
-		kvm_vgic_vcpu_destroy(vcpu);
+		goto err_destroy_vgic;
 
+	return 0;
+
+err_destroy_vgic:
+	kvm_vgic_vcpu_destroy(vcpu);
+err_destroy_apf:
+	kvm_arch_async_pf_destroy_vcpu(vcpu);
 	return err;
 }
 
@@ -580,6 +588,7 @@ void kvm_arch_vcpu_destroy(struct kvm_vcpu *vcpu)
 	kvm_timer_vcpu_terminate(vcpu);
 	kvm_pmu_vcpu_destroy(vcpu);
 	kvm_vgic_vcpu_destroy(vcpu);
+	kvm_arch_async_pf_destroy_vcpu(vcpu);
 	kvm_arm_vcpu_destroy(vcpu);
 }
 
@@ -831,8 +840,9 @@ int kvm_arch_vcpu_runnable(struct kvm_vcpu *v)
 		      (kvm_timer_should_notify_user(v) ||
 		       kvm_pmu_should_notify_user(v)));
 
-	return ((irq_lines || kvm_vgic_vcpu_pending_irq(v))
-		&& !kvm_arm_vcpu_stopped(v) && !v->arch.pause);
+	return (irq_lines || kvm_vgic_vcpu_pending_irq(v)) &&
+	       !kvm_arm_vcpu_stopped(v) && !v->arch.pause &&
+	       !kvm_arch_async_pf_is_halted(v);
 }
 
 bool kvm_arch_vcpu_in_kernel(struct kvm_vcpu *vcpu)
@@ -1028,6 +1038,29 @@ static void kvm_vcpu_sleep(struct kvm_vcpu *vcpu)
 	smp_rmb();
 }
 
+static void kvm_vcpu_async_pf_halt(struct kvm_vcpu *vcpu)
+{
+	struct rcuwait *wait = kvm_arch_vcpu_get_wait(vcpu);
+
+	kvm_arch_async_pf_halt(vcpu);
+	if (!list_empty_careful(&vcpu->async_pf.done))
+		kvm_arch_async_pf_unhalt(vcpu);
+
+	rcuwait_wait_event(wait, !kvm_arch_async_pf_is_halted(vcpu) ||
+			   kvm_request_pending(vcpu) ||
+			   !list_empty_careful(&vcpu->async_pf.done),
+			   TASK_INTERRUPTIBLE);
+
+	if (!list_empty_careful(&vcpu->async_pf.done))
+		kvm_arch_async_pf_unhalt(vcpu);
+
+	if (kvm_arch_async_pf_is_halted(vcpu)) {
+		kvm_make_request(KVM_REQ_ASYNC_PF_HALT, vcpu);
+		if (!list_empty_careful(&vcpu->async_pf.done))
+			kvm_arch_async_pf_unhalt(vcpu);
+	}
+}
+
 /**
  * kvm_vcpu_wfi - emulate Wait-For-Interrupt behavior
  * @vcpu:	The VCPU pointer
@@ -1113,6 +1146,9 @@ static int check_vcpu_requests(struct kvm_vcpu *vcpu)
 		if (kvm_check_request(KVM_REQ_SLEEP, vcpu))
 			kvm_vcpu_sleep(vcpu);
 
+		if (kvm_check_request(KVM_REQ_ASYNC_PF_HALT, vcpu))
+			kvm_vcpu_async_pf_halt(vcpu);
+
 		if (kvm_check_request(KVM_REQ_VCPU_RESET, vcpu))
 			kvm_reset_vcpu(vcpu);
 
@@ -1128,6 +1164,9 @@ static int check_vcpu_requests(struct kvm_vcpu *vcpu)
 
 		if (kvm_check_request(KVM_REQ_RECORD_STEAL, vcpu))
 			kvm_update_stolen_time(vcpu);
+
+		if (kvm_check_request(KVM_REQ_ASYNC_PF, vcpu))
+			kvm_check_async_pf_completion(vcpu);
 
 		if (kvm_check_request(KVM_REQ_RELOAD_GICv4, vcpu)) {
 			/* The distributor enable bits were changed */

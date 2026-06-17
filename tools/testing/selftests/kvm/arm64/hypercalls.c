@@ -11,8 +11,10 @@
 #include <errno.h>
 #include <linux/arm-smccc.h>
 #include <asm/kvm.h>
+#include <asm/kvm_para.h>
 #include <kvm_util.h>
 
+#include "gic.h"
 #include "processor.h"
 
 #define FW_REG_ULIMIT_VAL(max_feat_bit) (GENMASK(max_feat_bit, 0))
@@ -21,12 +23,22 @@
 #define KVM_REG_ARM_STD_BMAP_BIT_MAX		0
 #define KVM_REG_ARM_STD_HYP_BMAP_BIT_MAX	0
 #define KVM_REG_ARM_VENDOR_HYP_BMAP_BIT_MAX	1
-#define KVM_REG_ARM_VENDOR_HYP_BMAP_2_BIT_MAX   1
+#define KVM_REG_ARM_VENDOR_HYP_BMAP_2_BIT_MAX	2
 
 #define KVM_REG_ARM_STD_BMAP_RESET_VAL		FW_REG_ULIMIT_VAL(KVM_REG_ARM_STD_BMAP_BIT_MAX)
 #define KVM_REG_ARM_STD_HYP_BMAP_RESET_VAL	FW_REG_ULIMIT_VAL(KVM_REG_ARM_STD_HYP_BMAP_BIT_MAX)
 #define KVM_REG_ARM_VENDOR_HYP_BMAP_RESET_VAL	FW_REG_ULIMIT_VAL(KVM_REG_ARM_VENDOR_HYP_BMAP_BIT_MAX)
-#define KVM_REG_ARM_VENDOR_HYP_BMAP_2_RESET_VAL 0
+#define KVM_REG_ARM_VENDOR_HYP_BMAP_2_RESET_VAL			\
+	BIT(KVM_REG_ARM_VENDOR_HYP_BIT_ASYNC_PF)
+
+#define ST_GPA_BASE		BIT_ULL(30)
+#define APF_GPA_BASE		(ST_GPA_BASE + 0x10000)
+#define APF_DATA_SIZE		64
+#define APF_TEST_IRQ		(MIN_SPI - 1)
+#define APF_CONTROL_BLOCK	(APF_GPA_BASE | BIT_ULL(0))
+#define APF_ALT_CONTROL_BLOCK	((APF_GPA_BASE + APF_DATA_SIZE) | BIT_ULL(0))
+#define APF_RESERVED_FLAGS	BIT_ULL(1)
+#define KVM_APF_MIN_VERSION	0x010000
 
 struct kvm_fw_reg_info {
 	u64 reg;		/* Register definition */
@@ -53,6 +65,9 @@ enum test_stage {
 	TEST_STAGE_HVC_IFACE_FEAT_DISABLED,
 	TEST_STAGE_HVC_IFACE_FEAT_ENABLED,
 	TEST_STAGE_HVC_IFACE_FALSE_INFO,
+	TEST_STAGE_APF_INFO,
+	TEST_STAGE_APF_INVALID_FLAGS,
+	TEST_STAGE_APF_ENABLED,
 	TEST_STAGE_END,
 };
 
@@ -87,6 +102,10 @@ static const struct test_hvc_info hvc_info[] = {
 			ARM_SMCCC_VENDOR_HYP_KVM_PTP_FUNC_ID),
 	TEST_HVC_INFO(ARM_SMCCC_VENDOR_HYP_CALL_UID_FUNC_ID, 0),
 	TEST_HVC_INFO(ARM_SMCCC_VENDOR_HYP_KVM_PTP_FUNC_ID, KVM_PTP_VIRT_COUNTER),
+
+	/* KVM_REG_ARM_VENDOR_HYP_BMAP_2 */
+	TEST_HVC_INFO(ARM_SMCCC_VENDOR_HYP_KVM_ASYNC_PF_FUNC_ID,
+		      ARM_SMCCC_KVM_FUNC_ASYNC_PF_VERSION),
 };
 
 /* Feed false hypercall info to test the KVM behavior */
@@ -128,6 +147,95 @@ static void guest_test_hvc(const struct test_hvc_info *hc_info)
 	}
 }
 
+static void guest_async_pf_call(u32 func, struct arm_smccc_res *res)
+{
+	memset(res, 0, sizeof(*res));
+	do_smccc(ARM_SMCCC_VENDOR_HYP_KVM_ASYNC_PF_FUNC_ID,
+		 func, 0, 0, 0, 0, 0, 0, res);
+}
+
+static void guest_test_async_pf_info(void)
+{
+	struct arm_smccc_res res;
+
+	memset(&res, 0, sizeof(res));
+	do_smccc(ARM_SMCCC_VENDOR_HYP_KVM_FEATURES_FUNC_ID,
+		 0, 0, 0, 0, 0, 0, 0, &res);
+	__GUEST_ASSERT(res.a2 & BIT(KVM_REG_ARM_VENDOR_HYP_BIT_ASYNC_PF),
+		       "APF missing from vendor-hyp features: a2 = 0x%lx",
+		       res.a2);
+
+	guest_async_pf_call(ARM_SMCCC_KVM_FUNC_ASYNC_PF_VERSION, &res);
+	__GUEST_ASSERT(res.a0 == SMCCC_RET_SUCCESS && res.a1 >= KVM_APF_MIN_VERSION,
+		       "Unexpected APF version response: a0 = 0x%lx, a1 = 0x%lx",
+		       res.a0, res.a1);
+
+	guest_async_pf_call(ARM_SMCCC_KVM_FUNC_ASYNC_PF_SLOTS, &res);
+	__GUEST_ASSERT(res.a0 == SMCCC_RET_SUCCESS && res.a1,
+		       "Unexpected APF slots response: a0 = 0x%lx, a1 = 0x%lx",
+		       res.a0, res.a1);
+
+	guest_async_pf_call(ARM_SMCCC_KVM_FUNC_ASYNC_PF_IRQ, &res);
+	__GUEST_ASSERT(res.a0 == SMCCC_RET_SUCCESS && res.a1 == APF_TEST_IRQ,
+		       "Unexpected APF IRQ response: a0 = 0x%lx, a1 = 0x%lx",
+		       res.a0, res.a1);
+
+	guest_async_pf_call(~0U, &res);
+	__GUEST_ASSERT(res.a0 == SMCCC_RET_NOT_SUPPORTED,
+		       "APF accepted unknown function: a0 = 0x%lx", res.a0);
+}
+
+static unsigned long guest_async_pf_enable(u64 data)
+{
+	struct arm_smccc_res res;
+
+	memset(&res, 0, sizeof(res));
+	do_smccc(ARM_SMCCC_VENDOR_HYP_KVM_ASYNC_PF_FUNC_ID,
+		 ARM_SMCCC_KVM_FUNC_ASYNC_PF_ENABLE,
+		 (u32)data, data >> 32, 0, 0, 0, 0, &res);
+
+	return res.a0;
+}
+
+static void guest_test_async_pf_invalid_flags(void)
+{
+	unsigned long ret;
+
+	ret = guest_async_pf_enable(APF_RESERVED_FLAGS);
+	__GUEST_ASSERT(ret == SMCCC_RET_INVALID_PARAMETER,
+		       "APF accepted reserved disable flags: a0 = 0x%lx", ret);
+
+	ret = guest_async_pf_enable(APF_CONTROL_BLOCK | APF_RESERVED_FLAGS);
+	__GUEST_ASSERT(ret == SMCCC_RET_INVALID_PARAMETER,
+		       "APF accepted reserved enable flags: a0 = 0x%lx", ret);
+
+	ret = guest_async_pf_enable(APF_GPA_BASE);
+	__GUEST_ASSERT(ret == SMCCC_RET_INVALID_PARAMETER,
+		       "APF accepted nonzero block without enable: a0 = 0x%lx",
+		       ret);
+}
+
+static void guest_enable_async_pf(void)
+{
+	unsigned long ret;
+
+	ret = guest_async_pf_enable(APF_CONTROL_BLOCK);
+	__GUEST_ASSERT(ret == SMCCC_RET_SUCCESS,
+		       "Failed to enable APF: a0 = 0x%lx", ret);
+
+	ret = guest_async_pf_enable(APF_ALT_CONTROL_BLOCK);
+	__GUEST_ASSERT(ret == SMCCC_RET_SUCCESS,
+		       "Failed to repoint APF block: a0 = 0x%lx", ret);
+
+	ret = guest_async_pf_enable(APF_ALT_CONTROL_BLOCK);
+	__GUEST_ASSERT(ret == SMCCC_RET_NOT_REQUIRED,
+		       "APF exact re-enable was not a no-op: a0 = 0x%lx", ret);
+
+	ret = guest_async_pf_enable(APF_CONTROL_BLOCK);
+	__GUEST_ASSERT(ret == SMCCC_RET_SUCCESS,
+		       "Failed to restore APF block: a0 = 0x%lx", ret);
+}
+
 static void guest_code(void)
 {
 	while (stage != TEST_STAGE_END) {
@@ -140,6 +248,15 @@ static void guest_code(void)
 			break;
 		case TEST_STAGE_HVC_IFACE_FALSE_INFO:
 			guest_test_hvc(false_hvc_info);
+			break;
+		case TEST_STAGE_APF_INFO:
+			guest_test_async_pf_info();
+			break;
+		case TEST_STAGE_APF_INVALID_FLAGS:
+			guest_test_async_pf_invalid_flags();
+			break;
+		case TEST_STAGE_APF_ENABLED:
+			guest_enable_async_pf();
 			break;
 		default:
 			GUEST_FAIL("Unexpected stage = %u", stage);
@@ -158,7 +275,6 @@ struct st_time {
 };
 
 #define STEAL_TIME_SIZE		((sizeof(struct st_time) + 63) & ~63)
-#define ST_GPA_BASE		(1 << 30)
 
 static void steal_time_init(struct kvm_vcpu *vcpu)
 {
@@ -170,6 +286,133 @@ static void steal_time_init(struct kvm_vcpu *vcpu)
 
 	vcpu_device_attr_set(vcpu, KVM_ARM_VCPU_PVTIME_CTRL,
 			     KVM_ARM_VCPU_PVTIME_IPA, &st_ipa);
+}
+
+static void async_pf_init(struct kvm_vcpu *vcpu)
+{
+	unsigned int gpages;
+
+	gpages = vm_calc_num_guest_pages(VM_MODE_DEFAULT, APF_DATA_SIZE);
+	vm_userspace_mem_region_add(vcpu->vm, VM_MEM_SRC_ANONYMOUS,
+				    APF_GPA_BASE, 2, gpages, 0);
+}
+
+static void test_apf_state_attr_before_vm_start(struct kvm_vcpu *vcpu)
+{
+	u64 state = ~0ULL;
+	int ret;
+
+	ret = __vcpu_has_device_attr(vcpu, KVM_ARM_VCPU_APF_CTRL,
+				     KVM_ARM_VCPU_APF_STATE);
+	TEST_ASSERT(!ret, "APF state attr missing: ret = %d, errno = %d",
+		    ret, errno);
+
+	vcpu_device_attr_get(vcpu, KVM_ARM_VCPU_APF_CTRL,
+			     KVM_ARM_VCPU_APF_STATE, &state);
+	TEST_ASSERT(!state, "APF state reset value is not zero: 0x%lx", state);
+
+	state = APF_RESERVED_FLAGS;
+	ret = __vcpu_device_attr_set(vcpu, KVM_ARM_VCPU_APF_CTRL,
+				     KVM_ARM_VCPU_APF_STATE, &state);
+	TEST_ASSERT(ret && errno == EINVAL,
+		    "APF state accepted reserved disable flags: ret = %d, errno = %d",
+		    ret, errno);
+
+	state = APF_CONTROL_BLOCK | APF_RESERVED_FLAGS;
+	ret = __vcpu_device_attr_set(vcpu, KVM_ARM_VCPU_APF_CTRL,
+				     KVM_ARM_VCPU_APF_STATE, &state);
+	TEST_ASSERT(ret && errno == EINVAL,
+		    "APF state accepted reserved enable flags: ret = %d, errno = %d",
+		    ret, errno);
+
+	state = APF_GPA_BASE;
+	ret = __vcpu_device_attr_set(vcpu, KVM_ARM_VCPU_APF_CTRL,
+				     KVM_ARM_VCPU_APF_STATE, &state);
+	TEST_ASSERT(ret && errno == EINVAL,
+		    "APF state accepted nonzero block without enable: ret = %d, errno = %d",
+		    ret, errno);
+
+	state = APF_CONTROL_BLOCK;
+	vcpu_device_attr_set(vcpu, KVM_ARM_VCPU_APF_CTRL,
+			     KVM_ARM_VCPU_APF_STATE, &state);
+	vcpu_device_attr_get(vcpu, KVM_ARM_VCPU_APF_CTRL,
+			     KVM_ARM_VCPU_APF_STATE, &state);
+	TEST_ASSERT(state == APF_CONTROL_BLOCK,
+		    "APF state readback mismatch: 0x%lx", state);
+
+	state = 0;
+	vcpu_device_attr_set(vcpu, KVM_ARM_VCPU_APF_CTRL,
+			     KVM_ARM_VCPU_APF_STATE, &state);
+	vcpu_device_attr_get(vcpu, KVM_ARM_VCPU_APF_CTRL,
+			     KVM_ARM_VCPU_APF_STATE, &state);
+	TEST_ASSERT(!state, "APF state disable readback mismatch: 0x%lx",
+		    state);
+}
+
+static void test_apf_irq_attr_before_enable(struct kvm_vcpu *vcpu)
+{
+	u32 irq = 0;
+	int ret;
+
+	ret = __vcpu_has_device_attr(vcpu, KVM_ARM_VCPU_APF_CTRL,
+				     KVM_ARM_VCPU_APF_IRQ);
+	TEST_ASSERT(!ret, "APF IRQ attr missing: ret = %d, errno = %d",
+		    ret, errno);
+
+	vcpu_device_attr_get(vcpu, KVM_ARM_VCPU_APF_CTRL,
+			     KVM_ARM_VCPU_APF_IRQ, &irq);
+	TEST_ASSERT(irq >= MIN_PPI && irq < MIN_SPI,
+		    "APF IRQ default is not a PPI: %u", irq);
+
+	irq = MIN_PPI - 1;
+	ret = __vcpu_device_attr_set(vcpu, KVM_ARM_VCPU_APF_CTRL,
+				     KVM_ARM_VCPU_APF_IRQ, &irq);
+	TEST_ASSERT(ret && errno == EINVAL,
+		    "APF IRQ accepted SGI %u: ret = %d, errno = %d",
+		    irq, ret, errno);
+
+	irq = MIN_SPI;
+	ret = __vcpu_device_attr_set(vcpu, KVM_ARM_VCPU_APF_CTRL,
+				     KVM_ARM_VCPU_APF_IRQ, &irq);
+	TEST_ASSERT(ret && errno == EINVAL,
+		    "APF IRQ accepted SPI %u: ret = %d, errno = %d",
+		    irq, ret, errno);
+
+	irq = MIN_PPI;
+	vcpu_device_attr_set(vcpu, KVM_ARM_VCPU_APF_CTRL,
+			     KVM_ARM_VCPU_APF_IRQ, &irq);
+	irq = 0;
+	vcpu_device_attr_get(vcpu, KVM_ARM_VCPU_APF_CTRL,
+			     KVM_ARM_VCPU_APF_IRQ, &irq);
+	TEST_ASSERT(irq == MIN_PPI, "APF IRQ lower-bound readback mismatch: %u",
+		    irq);
+
+	irq = APF_TEST_IRQ;
+	vcpu_device_attr_set(vcpu, KVM_ARM_VCPU_APF_CTRL,
+			     KVM_ARM_VCPU_APF_IRQ, &irq);
+
+	irq = 0;
+	vcpu_device_attr_get(vcpu, KVM_ARM_VCPU_APF_CTRL,
+			     KVM_ARM_VCPU_APF_IRQ, &irq);
+	TEST_ASSERT(irq == APF_TEST_IRQ, "APF IRQ readback mismatch: %u", irq);
+}
+
+static void test_apf_irq_attr_after_enable(struct kvm_vcpu *vcpu)
+{
+	u64 state = 0;
+	u32 irq = APF_TEST_IRQ;
+	int ret;
+
+	ret = __vcpu_device_attr_set(vcpu, KVM_ARM_VCPU_APF_CTRL,
+				     KVM_ARM_VCPU_APF_IRQ, &irq);
+	TEST_ASSERT(ret && errno == EBUSY,
+		    "APF IRQ changed after enable: ret = %d, errno = %d",
+		    ret, errno);
+
+	vcpu_device_attr_get(vcpu, KVM_ARM_VCPU_APF_CTRL,
+			     KVM_ARM_VCPU_APF_STATE, &state);
+	TEST_ASSERT(state == APF_CONTROL_BLOCK,
+		    "APF state readback mismatch: 0x%lx", state);
 }
 
 static void test_fw_regs_before_vm_start(struct kvm_vcpu *vcpu)
@@ -264,6 +507,9 @@ static struct kvm_vm *test_vm_create(struct kvm_vcpu **vcpu)
 	vm = vm_create_with_one_vcpu(vcpu, guest_code);
 
 	steal_time_init(*vcpu);
+	async_pf_init(*vcpu);
+	test_apf_irq_attr_before_enable(*vcpu);
+	test_apf_state_attr_before_vm_start(*vcpu);
 
 	return vm;
 }
@@ -283,12 +529,17 @@ static void test_guest_stage(struct kvm_vm **vm, struct kvm_vcpu **vcpu)
 		test_fw_regs_after_vm_start(*vcpu);
 		break;
 	case TEST_STAGE_HVC_IFACE_FEAT_DISABLED:
-		/* Start a new VM so that all the features are now enabled by default */
+		/* Start a new VM so default-enabled firmware features are exposed. */
 		kvm_vm_free(*vm);
 		*vm = test_vm_create(vcpu);
 		break;
 	case TEST_STAGE_HVC_IFACE_FEAT_ENABLED:
 	case TEST_STAGE_HVC_IFACE_FALSE_INFO:
+	case TEST_STAGE_APF_INFO:
+	case TEST_STAGE_APF_INVALID_FLAGS:
+		break;
+	case TEST_STAGE_APF_ENABLED:
+		test_apf_irq_attr_after_enable(*vcpu);
 		break;
 	default:
 		TEST_FAIL("Unknown test stage: %d", prev_stage);
@@ -301,6 +552,10 @@ static void test_run(void)
 	struct kvm_vm *vm;
 	struct ucall uc;
 	bool guest_done = false;
+
+	TEST_REQUIRE(kvm_has_cap(KVM_CAP_ASYNC_PF));
+	TEST_ASSERT(!kvm_has_cap(KVM_CAP_ASYNC_PF_INT),
+		    "arm64 unexpectedly advertises KVM_CAP_ASYNC_PF_INT");
 
 	vm = test_vm_create(&vcpu);
 

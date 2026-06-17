@@ -17,6 +17,8 @@
 	GENMASK(KVM_REG_ARM_VENDOR_HYP_BMAP_BIT_COUNT - 1, 0)
 #define KVM_ARM_SMCCC_VENDOR_HYP_FEATURES_2			\
 	GENMASK(KVM_REG_ARM_VENDOR_HYP_BMAP_2_BIT_COUNT - 1, 0)
+#define KVM_ARM_SMCCC_VENDOR_HYP_FEATURES_2_DEFAULT		\
+	BIT(KVM_REG_ARM_VENDOR_HYP_BIT_ASYNC_PF)
 
 static void kvm_ptp_get_time(struct kvm_vcpu *vcpu, u64 *val)
 {
@@ -118,6 +120,9 @@ static bool kvm_smccc_test_fw_bmap(struct kvm_vcpu *vcpu, u32 func_id)
 	case ARM_SMCCC_VENDOR_HYP_KVM_PTP_FUNC_ID:
 		return test_bit(KVM_REG_ARM_VENDOR_HYP_BIT_PTP,
 				&smccc_feat->vendor_hyp_bmap);
+	case ARM_SMCCC_VENDOR_HYP_KVM_ASYNC_PF_FUNC_ID:
+		return test_bit(KVM_REG_ARM_VENDOR_HYP_BIT_ASYNC_PF,
+				&smccc_feat->vendor_hyp_bmap_2);
 	default:
 		return false;
 	}
@@ -367,6 +372,9 @@ int kvm_smccc_call_handler(struct kvm_vcpu *vcpu)
 		/* Function numbers 2-63 are reserved for pKVM for now */
 		val[2] = smccc_feat->vendor_hyp_bmap_2;
 		break;
+	case ARM_SMCCC_VENDOR_HYP_KVM_ASYNC_PF_FUNC_ID:
+		kvm_arch_async_pf_hypercall(vcpu, val);
+		break;
 	case ARM_SMCCC_VENDOR_HYP_KVM_PTP_FUNC_ID:
 		kvm_ptp_get_time(vcpu, val);
 		break;
@@ -403,6 +411,7 @@ void kvm_arm_init_hypercalls(struct kvm *kvm)
 	smccc_feat->std_bmap = KVM_ARM_SMCCC_STD_FEATURES;
 	smccc_feat->std_hyp_bmap = KVM_ARM_SMCCC_STD_HYP_FEATURES;
 	smccc_feat->vendor_hyp_bmap = KVM_ARM_SMCCC_VENDOR_HYP_FEATURES;
+	smccc_feat->vendor_hyp_bmap_2 = KVM_ARM_SMCCC_VENDOR_HYP_FEATURES_2_DEFAULT;
 
 	mt_init(&kvm->arch.smccc_filter);
 }

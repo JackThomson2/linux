@@ -22,6 +22,7 @@
 #include <asm/kvm_emulate.h>
 #include <asm/virt.h>
 
+#include "async_pf.h"
 #include "trace.h"
 
 static struct kvm_pgtable *hyp_pgtable;
@@ -1871,15 +1872,42 @@ static gfn_t get_canonical_gfn(const struct kvm_s2_fault_desc *s2fd,
 static int kvm_s2_fault_pin_pfn(const struct kvm_s2_fault_desc *s2fd,
 				struct kvm_s2_fault_vma_info *s2vi)
 {
+	struct kvm_vcpu *vcpu = s2fd->vcpu;
+	unsigned int foll = kvm_is_write_fault(vcpu) ? FOLL_WRITE : 0;
+	gfn_t gfn;
 	int ret;
 
 	ret = kvm_s2_fault_get_vma_info(s2fd, s2vi);
 	if (ret)
 		return ret;
 
-	s2vi->pfn = __kvm_faultin_pfn(s2fd->memslot, get_canonical_gfn(s2fd, s2vi),
-				      kvm_is_write_fault(s2fd->vcpu) ? FOLL_WRITE : 0,
+	gfn = get_canonical_gfn(s2fd, s2vi);
+
+	if (!kvm_s2_fault_is_perm(s2fd) &&
+	    kvm_apf_not_present_allowed(vcpu)) {
+		s2vi->pfn = __kvm_faultin_pfn(s2fd->memslot, gfn,
+					      foll | FOLL_NOWAIT,
+					      &s2vi->map_writable,
+					      &s2vi->page);
+		if (s2vi->pfn == KVM_PFN_ERR_NEEDS_IO) {
+			trace_kvm_try_async_get_page(s2fd->fault_ipa, gfn);
+			if (kvm_apf_gfn_present(vcpu, gfn)) {
+				trace_kvm_async_pf_repeated_fault(s2fd->fault_ipa, gfn);
+				kvm_make_request(KVM_REQ_ASYNC_PF_HALT, vcpu);
+				return 0;
+			}
+
+			if (kvm_apf_setup(vcpu, s2fd->fault_ipa, gfn))
+				return 0;
+		} else {
+			goto have_pfn;
+		}
+	}
+
+	s2vi->pfn = __kvm_faultin_pfn(s2fd->memslot, gfn, foll,
 				      &s2vi->map_writable, &s2vi->page);
+
+have_pfn:
 	if (unlikely(is_error_noslot_pfn(s2vi->pfn))) {
 		if (s2vi->pfn == KVM_PFN_ERR_HWPOISON) {
 			kvm_send_hwpoison_signal(s2fd->hva, __ffs(s2vi->vma_pagesize));

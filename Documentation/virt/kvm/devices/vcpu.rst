@@ -223,12 +223,76 @@ base address must be 64 byte aligned and exist within a valid guest memory
 region. See Documentation/virt/kvm/arm/pvtime.rst for more information
 including the layout of the stolen time structure.
 
-4. GROUP: KVM_VCPU_TSC_CTRL
+4. GROUP: KVM_ARM_VCPU_APF_CTRL
+================================
+
+:Architectures: ARM64
+
+4.1 ATTRIBUTE: KVM_ARM_VCPU_APF_IRQ
+-----------------------------------
+
+:Parameters: in kvm_device_attr.addr the address for the APF notification
+	     interrupt is a pointer to a __u32 PPI INTID
+
+Returns:
+
+	 =======  ======================================================
+	 -EBUSY   APF is already enabled on this VCPU, or the APF PPI
+		  has already been reserved by a previous enabled state
+	 -EFAULT  Error reading or writing the interrupt number
+	 -EINVAL  Invalid PPI interrupt number
+	 -ENXIO   APF is not supported
+	 =======  ======================================================
+
+Get or set the PPI INTID used for APF notification delivery.  The value must
+be a private peripheral interrupt INTID (16 <= intid < 32).  Userspace must
+configure the PPI before APF is enabled by the guest or restored through
+KVM_ARM_VCPU_APF_STATE.
+
+Once APF reserves the selected PPI, it remains owned by KVM for the VCPU
+lifetime.  Userspace must not inject it, and KVM rejects configurations that
+conflict with another in-kernel PPI owner such as the architected timers or PMU.
+
+4.2 ATTRIBUTE: KVM_ARM_VCPU_APF_STATE
+-------------------------------------
+
+:Parameters: in kvm_device_attr.addr the address of a __u64 APF control-block
+	     state value
+
+Returns:
+
+	 =======  ======================================================
+	 -EAGAIN  The in-kernel VGIC has not been initialized
+	 -EBUSY   The VCPU has already run
+	 -EEXIST  The configured APF PPI is already owned by another
+		  in-kernel device
+	 -EFAULT  Error reading or writing the state value
+	 -EINVAL  Reserved flag bits are set, the control-block address
+		  is invalid, or the configured APF PPI is invalid
+	 -ENODEV  APF requires an in-kernel VGIC
+	 -ENXIO   APF is not supported
+	 =======  ======================================================
+
+Get or set the per-VCPU APF enabled state for migration.  The value uses the
+same format as the APF enable SMCCC argument: bits 63-6 hold the 64-byte
+aligned physical address of the shared ``struct kvm_vcpu_pv_apf_data`` control
+block, bit 0 is KVM_ASYNC_PF_ENABLED, and bits 1-5 are reserved and must be
+zero.  Any nonzero value must set KVM_ASYNC_PF_ENABLED.  A zero value disables
+APF.
+
+Userspace should restore KVM_ARM_VCPU_APF_IRQ before restoring an enabled
+KVM_ARM_VCPU_APF_STATE, and should do so after creating guest memory and the
+in-kernel VGIC but before running the destination VCPU.  Restoring an enabled
+state reinitializes APF's transient pending state and sends the guest a wake-all
+notification.  See Documentation/virt/kvm/arm/apf.rst for the guest-visible
+APF protocol.
+
+5. GROUP: KVM_VCPU_TSC_CTRL
 ===========================
 
 :Architectures: x86
 
-4.1 ATTRIBUTE: KVM_VCPU_TSC_OFFSET
+5.1 ATTRIBUTE: KVM_VCPU_TSC_OFFSET
 
 :Parameters: 64-bit unsigned TSC offset
 
